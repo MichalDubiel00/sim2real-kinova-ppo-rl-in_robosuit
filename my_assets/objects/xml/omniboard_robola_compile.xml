@@ -1,0 +1,21 @@
+<mujoco model="omniboard">
+  <!--robola compile-->
+  <compiler angle="radian"/>
+
+  <asset>
+    <mesh name="omniboard_mesh" content_type="model/stl" file="meshes/Omniboard.stl"/>
+  </asset>
+
+  <worldbody>
+    <body>
+      <site name="bottom_site" pos="0 0 0" rgba="0 0 0 0"/>
+      <site name="top_site" pos="0 0 0.08" rgba="0 0 0 0"/>
+      <site name="horizontal_radius_site" pos="0.16 0.16 0" rgba="0 0 0 0"/>
+      <body name="object">
+        <geom name="board_visual" pos="-0.16 -0.04281 0.03281" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.2 0.45 0.8 1" mesh="omniboard_mesh"/>
+        <geom name="board_h_collision" size="0.16 0.04 0.04" pos="0 0 0.04" type="box"/>
+        <geom name="board_v_collision" size="0.04 0.16 0.04" pos="0 0 0.04" type="box"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

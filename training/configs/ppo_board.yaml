@@ -1,0 +1,43 @@
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 3.0e-4
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005      # mniejsza entropia — zadanie bardziej precyzyjne
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+# 5 przyciskow w sekwencji — dluzszy trening niz pojedynczy przycisk
+total_timesteps: 3_000_000
+
+# Dluzszy epizod: 5 sekwencyjnych nacisniec przy control_freq 20 Hz
+horizon: 1000
+
+# Domain randomization (sim2real)
+random_order: true
+board_pos_noise: 0.05
+
+# Szum percepcji (symulacja bledu estymacji pozy boardu, np. AprilTag):
+# staly bias pozycji per epizod [m], szum per krok [m], perturbacja osi
+percep_pos_bias: 0.005
+percep_pos_noise: 0.002
+percep_axis_noise: 0.02
+
+checkpoint_freq: 100_000
+log_dir: logs/board
+tensorboard_log: logs/tensorboard

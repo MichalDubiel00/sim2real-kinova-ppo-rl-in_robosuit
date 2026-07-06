@@ -1,0 +1,51 @@
+<mujoco model="emergency_stop_button">
+  <!-- Wizualnie wzorowany na przyciskach E-Stop z RoboCup:
+       zolta skrzynka (obudowa) + czerwony grzybek na szyjce.
+       Mesh "Emergency stop.stl" nie jest uzywany: to jedna bryla
+       (obudowa+grzybek razem), wiec nie da sie nia pokazac ruchu kapy. -->
+
+  <worldbody>
+    <body>
+      <!-- Static base of the button housing -->
+      <body name="object">
+        <geom name="base_visual" type="box" size="0.033 0.033 0.020"
+              pos="0 0 0.020" rgba="0.95 0.78 0.05 1" group="1" contype="0" conaffinity="0"/>
+        <!-- contype/conaffinity: baza (2/1) i kapa (4/1) nie koliduja ze soba
+             (kapa wsuwa sie w obudowe), ale obie koliduja z robotem (1/1) -->
+        <geom name="base_collision" type="box" size="0.033 0.033 0.020"
+              pos="0 0 0.020" group="0" contype="2" conaffinity="1"/>
+
+        <!-- Site for force sensor reference frame -->
+        <site name="button_force_site" pos="0 0 0.045" size="0.005" rgba="1 0 0 0.5"/>
+
+        <!-- Button cap with spring joint -->
+        <body name="button_cap" pos="0 0 0.040">
+          <!-- Prismatic joint simulating spring: 15mm travel, stiffness 500 N/m -->
+          <joint name="button_slide" type="slide" axis="0 0 -1"
+                 range="0 0.015" stiffness="500" damping="20" frictionloss="1"/>
+
+          <!-- Szyjka i czerwony grzybek (czesc ruchoma) -->
+          <geom name="cap_neck_visual" type="cylinder" size="0.014 0.007"
+                pos="0 0 -0.007" rgba="0.15 0.15 0.15 1" group="1"
+                contype="0" conaffinity="0"/>
+          <geom name="cap_visual" type="cylinder" size="0.022 0.012"
+                pos="0 0 0" rgba="0.85 0.05 0.05 1" group="1"
+                contype="0" conaffinity="0"/>
+          <geom name="cap_collision" type="cylinder" size="0.022 0.012"
+                pos="0 0 0" group="0" condim="3" friction="0.8 0.01 0.001"
+                contype="4" conaffinity="1"/>
+
+          <!-- Target site: where EEF should push -->
+          <site name="button_top" pos="0 0 0.013" size="0.005" rgba="1 1 0 0.8"/>
+          <!-- Contact site for force measurement -->
+          <site name="button_contact_site" pos="0 0 0.012" size="0.003" rgba="0 0 1 0.5"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <force name="button_force" site="button_contact_site"/>
+  </sensor>
+
+</mujoco>

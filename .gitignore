@@ -1,0 +1,30 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- Artefakty treningu (duze, odtwarzalne; archiwa runow trzymamy poza gitem) ---
+logs/
+
+# --- MuJoCo / robosuite ---
+MUJOCO_LOG.TXT
+
+# --- Nagrania i obrazy z watch_board / renderow ---
+*.mp4
+*.gif
+
+# --- IDE / edytory ---
+.vscode/
+.idea/
+*.swp
+
+# --- System ---
+.DS_Store
+core
+core.*
+
+# --- Claude Code (ustawienia lokalne sesji) ---
+.claude/settings.local.json
