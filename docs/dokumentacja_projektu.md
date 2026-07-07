@@ -147,13 +147,22 @@ netto nieopłacalne → polityka uczy się dolatywać do pierwszego celu i wisie
 (obserwowane zachowanie: szybki dolot, potem chaotyczne ruchy z rzadkimi przypadkowymi
 wciśnięciami; eval reward w plateau ~13–15 od 2.35M kroków).
 
-**Poprawka — wersja 2 (planowana/wdrażana):**
-1. approach jako **potential-based shaping**: r = k·(d_prev − d_curr) — wiszenie daje 0,
-   tylko realny postęp jest nagradzany; przeskok celu nie generuje kary (reset potencjału);
-2. bonusy dominujące: **+25/przycisk, +100/komplet**;
-3. **terminacja epizodu po sukcesie** (motywacja do szybkiego wykonania);
-4. kara za wielkość akcji −0.01·‖a‖² (tłumienie szarpanych ruchów, istotne też na sprzęcie);
-5. śladowe składniki gęste (0.05·approach + 0.05·align) dla gradientu na starcie nauki.
+**Poprawka — wersja 2 (wdrożona 2026-07-07):**
+
+```
+r = 10·(d_prev − d_curr)                     # potential-based shaping (postęp, nie obecność)
+  + 0.05·exp(-8·d) + 0.05·exp(-3·θ)          # śladowy gradient gęsty
+  + 25·[wciśnięcie celu] + 100·[komplet]     # bonusy dominujące
+  − 0.5·[kolizja z płytą] − 0.01·‖a‖²        # kary
+r_norm = r / 225 ;  epizod kończy się po sukcesie (bonus kompletu = nagroda terminalna)
+```
+
+Własności: wiszenie w miejscu daje ~0 (szaping płaci tylko za realny postęp; przeskok
+celu po wciśnięciu nie generuje kary — potencjał resetowany przy zmianie celu),
+wciskanie jest jednoznacznie opłacalne (+25 ≫ koszt przelotu ~0), terminacja po
+sukcesie usuwa dochód z "dożywania" epizodu, kara akcji tłumi szarpanie (istotne też
+dla sprzętu). Skala nagród nieporównywalna z v1: epizod losowej polityki ≈ 0÷−0.2,
+pełny sukces ≈ +1.0.
 
 ### 4.7. Kryterium sukcesu i maszyna stanów
 
@@ -225,7 +234,31 @@ co dla polityki jest bez różnicy (liczy się moment aktywacji).
 | v1 (`logs/board_v1_flat_layout`) | **błędna**: 5 przycisków płasko na froncie | uprzywilejowane (all_depressions) | eval ~10.4–11.2 @ 2.5–3M | układ niezgodny z RoboCup — geometria odtworzona ze zdjęcia, restart |
 | v2 (`logs/board_v2_privileged_obs`) | poprawna (krzyż + skosy 45°) | uprzywilejowane | eval 4.58 @ 100k (przerwany) | przejście na obs sim2real |
 | v3 (`logs/board`, reward v1) | poprawna | **sim2real** (szum percepcji, bez all_depressions) | eval: 0.77@50k → 6.83@200k → **plateau 13–15 od 2.35M**; ~1/5 przycisków/epizod, ruchy chaotyczne | **wada rewardu — lokalne optimum wiszenia** (rozdz. 4.6); wymaga rewardu v2 |
-| v4 (planowany) | poprawna | sim2real | — | reward v2: shaping potencjałowy + dominujące bonusy + terminacja po sukcesie |
+| v4 (`logs/board`, reward v2) | poprawna | sim2real | **pierwsze pełne sukcesy**: 0% → ~50–70% @ 2.8–3M; best eval 0.739 @ 2.8M; krzywa nadal rośnie przy 3M | reward v2 usunął lokalne optimum; polityka niedotrenowana — kontynuować |
+
+**Wyniki v4 — finalne (6M kroków = 3M od zera + 3M wznowienia):** krzywe uczenia
+0–6M — `docs/img/v4_eval_curve.png` (odtworzone z eventów TensorBoard, run
+`ppo_board_5`). Przebieg:
+- 0–1.5M: nauka dolotu i celowania (reward rośnie od −0.16, zero sukcesów),
+- ~1.55M: pierwsze pełne sukcesy (5/5 przycisków z terminacją),
+- 3M: ~50–70% sukcesów, best eval 0.739 @ 2.8M; krzywa wciąż rośnie → wznowienie,
+- 6M: **92% sukcesów średnio w ostatnich 10 ewaluacjach** (kilka ewaluacji 100%),
+  best eval 0.961 @ 4.9M; średnia długość epizodu spadła z 1000 (horyzont) do ~450–550.
+
+Test najlepszego modelu na 5 nagranych epizodach (`v4_final_6M.mp4`): **5/5 sukcesów**,
+epizody 271–577 kroków (14–29 s), rewardy 0.93–0.98. Dla porównania model @ 2.8M
+miał 3/5 i ~790 kroków/udany epizod — kontynuacja treningu dała i skuteczność,
+i ~2× szybsze wykonanie.
+
+Incydent: pierwsza próba wznowienia padła po ~98k kroków z `CUDA error: unspecified
+launch failure` (niestabilność laptopowego GPU po ~8 h ciągłego obciążenia; nie błąd
+kodu). Ponowne wznowienie z checkpointu 3M przeszło bez problemów — checkpointowanie
+co 100k kroków okazało się kluczowym zabezpieczeniem.
+
+Uwaga metodologiczna: wznowienie nadpisuje `evaluations.npz` (EvalCallback zaczyna
+plik od nowa) — pełną historię ewaluacji trzymają eventy TensorBoard; przy wznowieniu
+z `reset_num_timesteps=False` SB3 dopisuje do tego samego runu TB, więc krzywa jest
+ciągła.
 
 Porównanie v2 vs v3 przy 100k kroków (4.58 vs 2.44) pokazuje **cenę realizmu
 obserwacji**: szum percepcji i brak podglądu wciśnięć spowalniają zbieżność — to

@@ -120,6 +120,9 @@ class ButtonBoardEnv(ManipulationEnv):
         # Per-episode perception errors (redrawn in _reset_internal)
         self._bias_pos = np.zeros(3)
         self._bias_axis = np.zeros(3)
+        # Potential-based shaping state (reward v2)
+        self._prev_dist = None
+        self._prev_target = None
 
         super().__init__(
             robots=robots,
@@ -277,6 +280,10 @@ class ButtonBoardEnv(ManipulationEnv):
             -self.percep_pos_bias, self.percep_pos_bias, size=3)
         self._bias_axis = np.random.normal(0.0, self.percep_axis_noise, size=3)
 
+        # Reset shaping state (reward v2)
+        self._prev_dist = None
+        self._prev_target = None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -372,6 +379,14 @@ class ButtonBoardEnv(ManipulationEnv):
     # Reward
     # ------------------------------------------------------------------
 
+    # Reward v2 (potential-based shaping) — wagi:
+    SHAPING_K = 10.0        # nagroda za kazdy metr zblizenia do celu
+    PRESS_BONUS = 25.0      # za wcisniecie biezacego celu
+    COMPLETE_BONUS = 100.0  # za komplet 5 przyciskow
+    DENSE_COEF = 0.05       # sladowe gesty skladnik (gradient na starcie nauki)
+    ACTION_COST = 0.01      # kara za wielkosc akcji (tlumienie szarpania)
+    REWARD_NORM = 225.0     # ~max epizodu: 5*25 + 100
+
     def reward(self, action=None):
         tgt = self._target_btn()
         depress = self._depression(tgt)
@@ -385,29 +400,42 @@ class ButtonBoardEnv(ManipulationEnv):
         ):
             self._pressed[tgt] = True
             self._current_idx += 1
-            press_bonus = 5.0
+            press_bonus = self.PRESS_BONUS
 
         # Reward uses TRUE state (sim-only signal, no perception noise)
         arm = self.robots[0].arms[0]
         eef_site = self.robots[0].eef_site_id[arm]
         eef_pos = self.sim.data.site_xpos[eef_site]
-        tgt_pos = self.sim.data.site_xpos[self._btn_top_ids[self._target_btn()]]
+        tgt = self._target_btn()  # may have advanced above
+        tgt_pos = self.sim.data.site_xpos[self._btn_top_ids[tgt]]
         dist = float(np.linalg.norm(tgt_pos - eef_pos))
 
         eef_z = self.sim.data.site_xmat[eef_site].reshape(3, 3)[:, 2]
-        axis = -np.asarray(self.BUTTON_FACES[self._target_btn()][1])
+        axis = -np.asarray(self.BUTTON_FACES[tgt][1])
         cos_a = np.clip(np.dot(eef_z, axis), -1.0, 1.0)
         axis_err = float(np.arccos(np.abs(cos_a)))
 
-        r_approach  = np.exp(-8.0 * dist)           # 0-1, approach target
-        r_align     = np.exp(-3.0 * axis_err)        # 0-1, align EEF with push axis
-        r_complete  = 20.0 if all(self._pressed) else 0.0
+        # Potential-based shaping: pays only for PROGRESS toward the target;
+        # hovering earns 0, moving away pays back. No term on target switch
+        # (a switched target must not look like a shaping penalty).
+        if self._prev_target == tgt and self._prev_dist is not None:
+            r_shape = self.SHAPING_K * (self._prev_dist - dist)
+        else:
+            r_shape = 0.0
+        self._prev_target = tgt
+        self._prev_dist = dist
+
+        r_dense = self.DENSE_COEF * (np.exp(-8.0 * dist) + np.exp(-3.0 * axis_err))
+        r_complete = self.COMPLETE_BONUS if all(self._pressed) else 0.0
         r_collision = -0.5 if self._check_board_collision() else 0.0
+        r_action = 0.0
+        if action is not None:
+            r_action = -self.ACTION_COST * float(np.sum(np.square(action)))
 
-        total = r_approach + 0.5 * r_align + press_bonus + r_complete + r_collision
+        total = (r_shape + r_dense + press_bonus + r_complete
+                 + r_collision + r_action)
 
-        # Normalise: max theoretical reward per step ~ 1.5, press bonus 5, complete 20
-        return total * self.reward_scale / (1.5 + 5.0 * self.N_BUTTONS + 20.0)
+        return total * self.reward_scale / self.REWARD_NORM
 
     # ------------------------------------------------------------------
     # Termination
@@ -415,6 +443,14 @@ class ButtonBoardEnv(ManipulationEnv):
 
     def _check_success(self):
         return all(self._pressed)
+
+    def _post_action(self, action):
+        """Terminate the episode once all buttons are pressed (reward v2):
+        the completion bonus is a terminal reward, no post-success loitering."""
+        reward, done, info = super()._post_action(action)
+        if self._check_success():
+            done = True
+        return reward, done, info
 
     def _check_board_collision(self):
         """True if any robot geom touches the board plate (not the buttons)."""
