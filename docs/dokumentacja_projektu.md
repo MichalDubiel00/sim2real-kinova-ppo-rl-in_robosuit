@@ -260,6 +260,44 @@ plik od nowa) — pełną historię ewaluacji trzymają eventy TensorBoard; przy
 z `reset_num_timesteps=False` SB3 dopisuje do tego samego runu TB, więc krzywa jest
 ciągła.
 
+**Analiza porażek — 100 epizodów best_model @ 6M** (`logs/board/eval100.log`):
+sukcesy 89/100, średni czas sukcesu 528 kroków (26 s). Porażki: 9× częściowy postęp
+(2–4/5, zabrakło horyzontu — niegroźne), 1× utknięcie, 1× 0/5. **Kluczowe odkrycie:
+96/100 epizodów miało kontakt ramienia z płytą** (śr. 17 kroków ≈ 0.85 s/epizod) —
+kara kolizji −0.5 po normalizacji (0.002/krok) była pomijalna wobec bonusów i polityka
+nauczyła się ją ignorować. W symulacji bez znaczenia, na sprzęcie niedopuszczalne
+(szorowanie chwytakiem po panelu).
+
+**Reward v2.1 (fine-tuning od checkpointu 6M, +2M kroków):**
+- kara kolizji ×10: −5.0 (COLLISION_COST),
+- nowa kara za ZMIANĘ akcji: −0.02·‖aₜ−aₜ₋₁‖² (ACTION_RATE_COST) — karze szarpanie,
+  nie prędkość; wygładzenie trajektorii istotne dla sprzętu (przekładnie, odrzucane
+  komendy przy skokowych deltach OSC).
+Metoda: fine-tuning istniejącej polityki (nie trening od zera) — PPO jest on-policy,
+funkcja wartości szybko adaptuje się do zmienionych kar.
+
+**Wyniki fine-tuningu (6M → 8M kroków, reward v2.1)** — porównanie 100 epizodów
+na model, identyczna sekwencja randomizacji (ten sam seed → parowane warunki);
+`logs/board/eval100_compare.log`:
+
+| Metryka | v2 @ 6M | v2.1 @ 8M | zmiana |
+|---|---|---|---|
+| Sukcesy (5/5 przycisków) | 87 % | **100 %** | +13 pp |
+| Średni czas sukcesu | 522 kroków (26 s) | **352 kroków (18 s)** | −33 % |
+| Epizody z kontaktem z płytą | 95 % | 61 % | −34 pp |
+| Średnio kroków kolizji / epizod | 15.8 | **2.4** | −85 % |
+| Gładkość (śr. ‖Δa‖ / krok) | 3.22 | 3.15 | −2 % |
+
+Wnioski: podniesienie kary kolizji do znaczącego poziomu wyeliminowało wyuczone
+"szorowanie" po panelu (pozostały kontakt ~2 kroki/epizod to głównie moment samego
+wciskania przycisku przy płycie), a usunięcie zbędnych kontaktów poprawiło też
+niezawodność (100/100) i szybkość (−33 %). Kara za zmianę akcji miała marginalny
+wpływ na surową metrykę ‖Δa‖ — szarpanie akcji na poziomie polityki jest w dużej
+mierze filtrowane przez kontroler OSC; przy wdrożeniu sprzętowym i tak zalecane
+jest dodatkowe ograniczenie prędkości/przyspieszeń po stronie kontrolera Kinovy.
+Ostatnie 6 ewaluacji treningu: komplet 100 % sukcesów. Wideo: `v5_finetuned_8M.mp4`
+(5/5, epizody 292–456 kroków).
+
 Porównanie v2 vs v3 przy 100k kroków (4.58 vs 2.44) pokazuje **cenę realizmu
 obserwacji**: szum percepcji i brak podglądu wciśnięć spowalniają zbieżność — to
 oczekiwany koszt polityki zdolnej do transferu.

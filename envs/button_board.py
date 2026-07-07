@@ -123,6 +123,7 @@ class ButtonBoardEnv(ManipulationEnv):
         # Potential-based shaping state (reward v2)
         self._prev_dist = None
         self._prev_target = None
+        self._prev_action = None
 
         super().__init__(
             robots=robots,
@@ -283,6 +284,7 @@ class ButtonBoardEnv(ManipulationEnv):
         # Reset shaping state (reward v2)
         self._prev_dist = None
         self._prev_target = None
+        self._prev_action = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -379,12 +381,14 @@ class ButtonBoardEnv(ManipulationEnv):
     # Reward
     # ------------------------------------------------------------------
 
-    # Reward v2 (potential-based shaping) — wagi:
+    # Reward v2.1 (potential-based shaping) — wagi:
     SHAPING_K = 10.0        # nagroda za kazdy metr zblizenia do celu
     PRESS_BONUS = 25.0      # za wcisniecie biezacego celu
     COMPLETE_BONUS = 100.0  # za komplet 5 przyciskow
     DENSE_COEF = 0.05       # sladowe gesty skladnik (gradient na starcie nauki)
-    ACTION_COST = 0.01      # kara za wielkosc akcji (tlumienie szarpania)
+    ACTION_COST = 0.01      # kara za wielkosc akcji
+    ACTION_RATE_COST = 0.02  # kara za ZMIANE akcji miedzy krokami (szarpanie)
+    COLLISION_COST = 5.0    # kara za kontakt robota z plyta (v2: 0.5 — ignorowana)
     REWARD_NORM = 225.0     # ~max epizodu: 5*25 + 100
 
     def reward(self, action=None):
@@ -427,10 +431,16 @@ class ButtonBoardEnv(ManipulationEnv):
 
         r_dense = self.DENSE_COEF * (np.exp(-8.0 * dist) + np.exp(-3.0 * axis_err))
         r_complete = self.COMPLETE_BONUS if all(self._pressed) else 0.0
-        r_collision = -0.5 if self._check_board_collision() else 0.0
+        r_collision = (-self.COLLISION_COST
+                       if self._check_board_collision() else 0.0)
         r_action = 0.0
         if action is not None:
+            action = np.asarray(action, dtype=np.float64)
             r_action = -self.ACTION_COST * float(np.sum(np.square(action)))
+            if self._prev_action is not None:
+                delta = action - self._prev_action
+                r_action -= self.ACTION_RATE_COST * float(np.sum(np.square(delta)))
+            self._prev_action = action.copy()
 
         total = (r_shape + r_dense + press_bonus + r_complete
                  + r_collision + r_action)
