@@ -277,8 +277,14 @@ Metoda: fine-tuning istniejącej polityki (nie trening od zera) — PPO jest on-
 funkcja wartości szybko adaptuje się do zmienionych kar.
 
 **Wyniki fine-tuningu (6M → 8M kroków, reward v2.1)** — porównanie 100 epizodów
-na model, identyczna sekwencja randomizacji (ten sam seed → parowane warunki);
-`logs/board/eval100_compare.log`:
+na model (`logs/board/eval100_compare.log`). Metodologia: obie serie startowały
+z tego samego seeda globalnego, ale strumień losowości rozjeżdża się od 2. epizodu
+(szum percepcji losowany per krok, a modele robią różną liczbę kroków) — czyli są
+to dwie niezależne próby z tej samej dystrybucji warunków, nie parowanie
+epizod-w-epizod. Przy n=100 i różnicy 87 vs 100 sukcesów wynik jest jednoznaczny
+(test Fishera p ≈ 2·10⁻⁴). Do ściśle parowanych porównań (re-seed przed każdym
+epizodem → epizod k ma identyczne warunki i sekwencję szumu dla każdego modelu)
+służy `training/compare_models.py` (metryki, CSV, test Fishera).
 
 | Metryka | v2 @ 6M | v2.1 @ 8M | zmiana |
 |---|---|---|---|
