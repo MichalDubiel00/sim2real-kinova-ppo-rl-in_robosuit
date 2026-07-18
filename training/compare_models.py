@@ -21,6 +21,9 @@ Metryki (na epizod, potem agregaty):
   - kroki: dlugosc epizodu (sredni czas sukcesu liczony TYLKO po sukcesach)
   - kolizja: liczba krokow z kontaktem geomu robota z plyta (przyciski sie
     nie licza — patrz ButtonBoardEnv._check_board_collision)
+  - misuse: liczba krokow z kontaktem NIE-palcowej czesci robota (nadgarstek,
+    ramie, obudowa grippera) z przyciskiem — v2.2 karze to jak kolizje,
+    a wcisniecie bez kontaktu palcow z grzybkiem nie liczy sie do sekwencji
   - gladkosc: srednie ||a_t - a_{t-1}|| na krok (szarpanie komend, nie predkosc)
   - stuck: przekatna bounding boxa pozycji EEF z ostatnich 200 krokow < 3 cm
 """
@@ -55,7 +58,7 @@ def run_episode(env, model, seed):
     arm = env.robots[0].arms[0]
     eef_site = env.robots[0].eef_site_id[arm]
 
-    done, t, coll_steps, rate_sum = False, 0, 0, 0.0
+    done, t, coll_steps, misuse_steps, rate_sum = False, 0, 0, 0, 0.0
     prev_a = None
     eef_hist = []
 
@@ -65,6 +68,8 @@ def run_episode(env, model, seed):
         t += 1
         if env._check_board_collision():
             coll_steps += 1
+        if env._check_button_misuse():
+            misuse_steps += 1
         if prev_a is not None:
             rate_sum += float(np.linalg.norm(action - prev_a))
         prev_a = action
@@ -81,6 +86,7 @@ def run_episode(env, model, seed):
         "pressed": int(sum(env._pressed)),
         "steps": t,
         "coll_steps": coll_steps,
+        "misuse_steps": misuse_steps,
         "action_rate": rate_sum / max(t - 1, 1),
         "stuck": bool(stuck),
     }
@@ -90,6 +96,7 @@ def summarize(label, rows):
     succ = np.array([r["success"] for r in rows])
     steps = np.array([r["steps"] for r in rows])
     coll = np.array([r["coll_steps"] for r in rows])
+    misuse = np.array([r["misuse_steps"] for r in rows])
     rate = np.array([r["action_rate"] for r in rows])
     pressed = np.array([r["pressed"] for r in rows])
     stuck = np.array([r["stuck"] for r in rows])
@@ -102,6 +109,8 @@ def summarize(label, rows):
               f"({steps[succ].mean()/20:.1f} s przy 20 Hz)")
     print(f"epizody z kolizja:        {(coll > 0).sum()}/{n}")
     print(f"sr. krokow kolizji/epizod: {coll.mean():.1f}")
+    print(f"epizody z misuse przycisku: {(misuse > 0).sum()}/{n}")
+    print(f"sr. krokow misuse/epizod:  {misuse.mean():.1f}")
     print(f"gladkosc sr. ||da||/krok:  {rate.mean():.4f}")
     fails = [int(((~succ) & (pressed == k)).sum()) for k in range(5)]
     print(f"porazki wg wcisnietych (0..4/5): {fails}, stuck: {stuck.sum()}")
@@ -149,6 +158,7 @@ def main():
             rows.append(r)
             print(f"  ep{ep:03d}: sukces={r['success']} {r['pressed']}/5 "
                   f"kroki={r['steps']} kolizja={r['coll_steps']} "
+                  f"misuse={r['misuse_steps']} "
                   f"rate={r['action_rate']:.3f}", flush=True)
         all_rows[label] = rows
 
@@ -172,11 +182,13 @@ def main():
         with open(args.csv, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["model", "epizod", "seed", "sukces", "wcisniete",
-                        "kroki", "kroki_kolizji", "action_rate", "stuck"])
+                        "kroki", "kroki_kolizji", "kroki_misuse",
+                        "action_rate", "stuck"])
             for label, rows in all_rows.items():
                 for ep, r in enumerate(rows):
                     w.writerow([label, ep, args.seed + ep, int(r["success"]),
                                 r["pressed"], r["steps"], r["coll_steps"],
+                                r["misuse_steps"],
                                 f"{r['action_rate']:.5f}", int(r["stuck"])])
         print(f"CSV zapisany: {args.csv}")
 

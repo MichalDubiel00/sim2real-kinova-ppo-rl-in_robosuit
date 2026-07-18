@@ -24,6 +24,16 @@ observed (real board is not wired); press detection on hardware comes
 from EEF force + push depth, and the task state machine (which button
 is next) is the supervisor's job — here simulated by the env itself.
 
+Press model (reward v2.2): a press only counts when a gripper FINGER geom
+is in contact with the button cap at the moment of activation — mirroring
+the hardware supervisor, which detects presses from force/kinematics at
+the TCP and would never register a press made with the wrist or arm.
+Non-finger robot contact with any button is penalised like a board
+collision (wrist-side pressing risks the Gen3 wrist camera and breaks
+the TCP-based force/depth estimates). The gripper is also forced closed
+(action dim stays 7; the gripper command is overridden) so the policy
+presses with a stiff, well-defined fingertip contact.
+
 Coordinate frame:
   - Robot base at (0, 0, KINOVA_BASE_Z), facing +X
   - Wall face at x = WALL_X; omniboard big (back) face mounted on it,
@@ -64,6 +74,8 @@ class ButtonBoardEnv(ManipulationEnv):
         percep_pos_noise:  gaussian per-step noise std [m] on perceived target pos
         percep_axis_noise: gaussian per-episode perturbation of the press axis
         reward_scale:      multiplier on total reward
+        force_gripper_closed: if True, override the gripper action to
+                           "close" every step (action_dim stays 7)
     """
 
     N_BUTTONS = 5
@@ -105,6 +117,7 @@ class ButtonBoardEnv(ManipulationEnv):
         percep_pos_bias=0.005,
         percep_pos_noise=0.002,
         percep_axis_noise=0.02,
+        force_gripper_closed=True,
         **kwargs,
     ):
         self.use_object_obs = use_object_obs
@@ -114,6 +127,7 @@ class ButtonBoardEnv(ManipulationEnv):
         self.percep_pos_bias = percep_pos_bias
         self.percep_pos_noise = percep_pos_noise
         self.percep_axis_noise = percep_axis_noise
+        self.force_gripper_closed = force_gripper_closed
 
         self._current_idx = 0
         self._pressed = [False] * self.N_BUTTONS
@@ -257,6 +271,27 @@ class ButtonBoardEnv(ManipulationEnv):
         self._btn_qposadr = [self.sim.model.jnt_qposadr[j] for j in jnt_ids]
         self._btn_dofadr  = [self.sim.model.jnt_dofadr[j]  for j in jnt_ids]
 
+        # Geom IDs for the v2.2 press gate / button-misuse penalty
+        arm = self.robots[0].arms[0]
+        gripper = self.robots[0].gripper[arm]
+        finger_names = (gripper.important_geoms["left_finger"]
+                        + gripper.important_geoms["right_finger"])
+        self._finger_geom_ids = {self.sim.model.geom_name2id(n)
+                                 for n in finger_names}
+        self._cap_geom_ids = [
+            self.sim.model.geom_name2id(f"btn{i}_cap_collision")
+            for i in range(self.N_BUTTONS)
+        ]
+        self._btn_geom_ids = set(self._cap_geom_ids) | {
+            self.sim.model.geom_name2id(f"btn{i}_base_collision")
+            for i in range(self.N_BUTTONS)
+        }
+        self._robot_geom_ids = {
+            gid for gid in range(self.sim.model.ngeom)
+            if (self.sim.model.geom_id2name(gid) or "")
+            .startswith(("robot", "gripper"))
+        }
+
     # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
@@ -378,10 +413,20 @@ class ButtonBoardEnv(ManipulationEnv):
         return observables
 
     # ------------------------------------------------------------------
+    # Step
+    # ------------------------------------------------------------------
+
+    def step(self, action):
+        if self.force_gripper_closed:
+            action = np.asarray(action, dtype=np.float64).copy()
+            action[-1] = 1.0  # Robotiq85: 1 = close
+        return super().step(action)
+
+    # ------------------------------------------------------------------
     # Reward
     # ------------------------------------------------------------------
 
-    # Reward v2.1 (potential-based shaping) — wagi:
+    # Reward v2.2 (potential-based shaping + finger-contact press gate) — wagi:
     SHAPING_K = 10.0        # nagroda za kazdy metr zblizenia do celu
     PRESS_BONUS = 25.0      # za wcisniecie biezacego celu
     COMPLETE_BONUS = 100.0  # za komplet 5 przyciskow
@@ -395,12 +440,16 @@ class ButtonBoardEnv(ManipulationEnv):
         tgt = self._target_btn()
         depress = self._depression(tgt)
 
-        # Advance sequence when current button is activated
+        # Advance sequence when current button is activated. v2.2 gate:
+        # the press must come from a gripper finger on the cap — the
+        # hardware supervisor detects presses at the TCP and would never
+        # register one made with the wrist or arm.
         press_bonus = 0.0
         if (
             self._current_idx < self.N_BUTTONS
             and depress >= self.ACTIVATION_DEPTH
             and not self._pressed[tgt]
+            and self._finger_on_cap(tgt)
         ):
             self._pressed[tgt] = True
             self._current_idx += 1
@@ -432,7 +481,8 @@ class ButtonBoardEnv(ManipulationEnv):
         r_dense = self.DENSE_COEF * (np.exp(-8.0 * dist) + np.exp(-3.0 * axis_err))
         r_complete = self.COMPLETE_BONUS if all(self._pressed) else 0.0
         r_collision = (-self.COLLISION_COST
-                       if self._check_board_collision() else 0.0)
+                       if (self._check_board_collision()
+                           or self._check_button_misuse()) else 0.0)
         r_action = 0.0
         if action is not None:
             action = np.asarray(action, dtype=np.float64)
@@ -468,8 +518,31 @@ class ButtonBoardEnv(ManipulationEnv):
             geom1 = self.sim.model.geom_id2name(contact.geom1) or ""
             geom2 = self.sim.model.geom_id2name(contact.geom2) or ""
             robot_geom = any(g.startswith(("robot", "gripper"))
-                             for g in (geom1, geom2))
+                             for g in (geom1, geom2)) 
             board_geom = any("board" in g for g in (geom1, geom2))
             if robot_geom and board_geom:
                 return True
+        return False
+
+    def _finger_on_cap(self, i):
+        """True if any gripper finger geom touches button i's cap."""
+        cap_id = self._cap_geom_ids[i]
+        for contact in self.sim.data.contact[: self.sim.data.ncon]:
+            g1, g2 = contact.geom1, contact.geom2
+            if (g1 == cap_id and g2 in self._finger_geom_ids) or \
+               (g2 == cap_id and g1 in self._finger_geom_ids):
+                return True
+        return False
+
+    def _check_button_misuse(self):
+        """True if a NON-finger robot geom (wrist, arm, gripper housing)
+        touches any button — pressing like that risks the wrist camera on
+        hardware and invalidates TCP-based force/depth estimates."""
+        for contact in self.sim.data.contact[: self.sim.data.ncon]:
+            g1, g2 = contact.geom1, contact.geom2
+            for r, b in ((g1, g2), (g2, g1)):
+                if (b in self._btn_geom_ids
+                        and r in self._robot_geom_ids
+                        and r not in self._finger_geom_ids):
+                    return True
         return False

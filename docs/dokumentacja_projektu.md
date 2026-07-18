@@ -197,6 +197,78 @@ Przyciski niepodłączone elektrycznie → detekcja wciśnięcia wyłącznie po 
 się** po wciśnięciu (grzybek zostaje ~10 mm niżej) — symulacja modeluje sprężynę powrotną,
 co dla polityki jest bez różnicy (liczy się moment aktywacji).
 
+### 5.1. Architektura nadzorcy (supervisor)
+
+Zasada projektowa: **nadzorca na sprzęcie to dokładnie to, co w symulacji robi
+`ButtonBoardEnv` poza fizyką**. Polityka jest tylko funkcją obs→akcja; maszynę
+stanów celu, detekcję wciśnięć i budowanie obserwacji env „udaje" wewnętrznie —
+na robocie realizuje je deterministyczny program. RL odpowiada wyłącznie za ruch,
+nigdy za logikę zadania i bezpieczeństwo (nadzorca = audytowalna skorupa
+bezpieczeństwa wokół wyuczonej polityki).
+
+Jedna pętla o częstotliwości sterowania z symulacji (20 Hz, `control_freq`):
+
+```
+┌─ raz na start epizodu ──────────────────────────────────────┐
+│ kamera → AprilTag → poza 6D boardu                          │
+│ → pozycje spoczynkowe i osie 5 przycisków (tabela           │
+│   BUTTON_FACES z env) → transformacja do bazy robota        │
+└─────────────────────────────────────────────────────────────┘
+┌─ co cykl (20 Hz) ───────────────────────────────────────────┐
+│ 1. odczyt z Kinovy: stawy, poza EEF, estymata sily          │
+│ 2. detektor wcisniecia aktualnego celu                      │
+│ 3. maszyna stanow: wcisnieto? → nastepny cel / DONE         │
+│ 4. budowa obs: identyczny wektor jak w sim                  │
+│ 5. polityka.predict(obs) → 7-dim akcja                      │
+│ 6. warstwa bezpieczenstwa → komenda kartezjanska (Kortex)   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Klocki i ich odpowiedniki w środowisku symulacyjnym:
+
+| Klocek na sprzęcie | Odpowiednik w `ButtonBoardEnv` |
+|---|---|
+| estymacja pozy boardu (AprilTag, raz/epizod) + geometria CAD | `_load_model` + `BUTTON_FACES`; błąd estymacji = `percep_pos_bias`, jitter re-estymacji = `percep_pos_noise` |
+| detektor wciśnięcia (siła + kinematyka w TCP, debounce) | `ACTIVATION_DEPTH` + bramka `_finger_on_cap` (v2.2) |
+| maszyna stanów: lista celów, indeks, DONE/TIMEOUT/FAULT | `_order`, `_current_idx`, `_pressed`, `_check_success` |
+| budowa wektora obs (bit w bit jak w sim) | `_setup_observables` + `flatten_obs` |
+| warstwa bezpieczeństwa (poza polityką) | brak — w sim zbędna, na sprzęcie obowiązkowa |
+
+**Detektor wciśnięcia** — dwa warunki jednocześnie, utrzymane przez 3–5 kolejnych
+cykli (debounce):
+- *głębokość z kinematyki*: rzut (poza_EEF − pozycja_spoczynkowa_grzybka) na oś
+  wciskania ≥ ~10–12 mm; pozycja spoczynkowa z pozy boardu + CAD, TCP skalibrowany
+  na czubek **zamkniętych** palców (stąd wymuszenie zamkniętego grippera w v2.2),
+- *siła wzdłuż osi*: Kortex API udostępnia estymatę zewnętrznego wrencha na
+  narzędziu (`tool_external_wrench`, liczoną z momentów stawów — nie trzeba
+  własnego J^T·τ); sprężyna 500 N/m × 12 mm ≈ 6 N → próg ~4–5 N.
+
+To fizyczny odpowiednik bramki v2.2: wciśnięcie nadgarstkiem nie przejdzie przez
+detektor (głębokość liczona w TCP się nie zgadza), więc symulacja musi odrzucać
+dokładnie te same wciśnięcia — inaczej polityka trenuje na zachowaniach, których
+nadzorca nigdy nie zaliczy.
+
+**Budowa obserwacji** — najbardziej podatny na błędy element: wektor musi być
+zgodny z symulacją co do porządku pól, układu współrzędnych (świat sim = baza
+robota w (0, 0, 0.65), +X ku ścianie) i konwencji kwaternionów. Na sprzęcie NIE
+dodaje się sztucznego szumu — realna percepcja szumi sama; szum w treningu był
+po to, by polityka była na to odporna. Zadanie kalibracyjne przed wdrożeniem:
+zmierzyć realny błąd AprilTag (np. dotknięcie przycisku ręcznie prowadzonym
+robotem vs predykcja) i dopasować `percep_pos_bias`/`percep_pos_noise` w sim
+do zmierzonych wartości (ew. krótki dotrening).
+
+**Warstwa bezpieczeństwa** (poza polityką, nadrzędna): box przestrzeni roboczej
+wokół boardu, limity prędkości/przyspieszeń po stronie kontrolera (filtr OSC
+z symulacji nie przenosi się na sprzęt), próg siły → natychmiastowy stop,
+fizyczny E-Stop operatora. Stany awaryjne maszyny: TIMEOUT (brak postępu →
+powrót do pozycji domowej), FAULT (przekroczona siła → stop).
+
+Zakres implementacji: jeden proces (Python + Kortex API lub node ROS2, zależnie
+od stacku labu), szacunkowo 300–500 linii, z czego większość to detektor
+i budowa obs. Testowalny bez robota: zamiast Kortexa podpina się symulację
+(ten sam interfejs odczyt/komenda), co pozwala zweryfikować całą pętlę nadzorcy
+przed pierwszym uruchomieniem na sprzęcie.
+
 ## 6. Trening
 
 ### 6.1. Hiperparametry PPO (`ppo_board.yaml`)
@@ -303,6 +375,38 @@ mierze filtrowane przez kontroler OSC; przy wdrożeniu sprzętowym i tak zalecan
 jest dodatkowe ograniczenie prędkości/przyspieszeń po stronie kontrolera Kinovy.
 Ostatnie 6 ewaluacji treningu: komplet 100 % sukcesów. Wideo: `v5_finetuned_8M.mp4`
 (5/5, epizody 292–456 kroków).
+
+**Reward v2.2 — bramka kontaktu palcowego (wdrożona 2026-07-18, trening w toku):**
+obserwacja z wideo: model czasami wciska przyciski nie gripperem, lecz częścią
+nadgarstkową od boku. Analiza kodu potwierdziła **drugi przypadek reward hackingu**:
+bonus za wciśnięcie zależał wyłącznie od pozycji jointa przycisku (obojętne, co
+go wgniata), a kara kolizji celowo omijała geomy przycisków — kontakt dowolnej
+części robota z grzybkiem był darmowy. Kwantyfikacja (8 epizodów best_model @ 8M
+w nowym env): kontakt nie-palcowy z przyciskami w **8/8 epizodów, śr. 138 kroków**
+— nawyk znacznie powszechniejszy, niż sugerowało wideo.
+
+Na sprzęcie to dyskwalifikujące z trzech powodów: (1) Kinova Gen3 ma moduł
+wizyjny na nadgarstku — dokładnie w miejscu, którym polityka pcha; (2) detekcja
+wciśnięcia zakłada kontakt w TCP — głębokość z kinematyki i siła z momentów
+stawów (J^T·τ) liczone dla EEF są błędne przy kontakcie nadgarstkiem (inne ramię
+dźwigni); (3) nadzorca przełączałby cele na podstawie fikcyjnych detekcji.
+
+Zmiany (`envs/button_board.py`):
+- **bramka na wciśnięcie**: aktywacja liczy się tylko przy jednoczesnym kontakcie
+  geomu palca grippera (8 geomów z `important_geoms` Robotiq85) z grzybkiem celu —
+  odwzorowuje detekcję nadzorcy na sprzęcie (siła/kinematyka w TCP nie zarejestruje
+  wciśnięcia nadgarstkiem); bez kontaktu palcowego sekwencja NIE postępuje,
+- **kara misuse**: kontakt nie-palcowej części robota z dowolnym przyciskiem
+  karany jak kolizja z płytą (COLLISION_COST),
+- **wymuszony zamknięty gripper**: `step()` nadpisuje 7. wymiar akcji na „zamknij"
+  (wymiar akcji zostaje — checkpoint 8M pasuje do fine-tuningu); sztywny,
+  dobrze zdefiniowany punkt kontaktu w palcach, zgodny z TCP.
+Nowa metryka w `compare_models.py`: kroki misuse/epizod. Weryfikacja: test
+negatywny (wgniecenie 20 mm bez kontaktu palców → brak zaliczenia), test
+wymuszenia grippera, oraz 8 epizodów starego modelu w nowym env — **4/8 sukcesów**
+(spadek ze 100 %: stary model częściowo polegał na wciskaniu nadgarstkiem;
+wciśnięcia palcami są zaliczane poprawnie). Plan: fine-tuning od checkpointu 8M
+(+2M kroków), ewaluacja 100 epizodów z metryką misuse.
 
 Porównanie v2 vs v3 przy 100k kroków (4.58 vs 2.44) pokazuje **cenę realizmu
 obserwacji**: szum percepcji i brak podglądu wciśnięć spowalniają zbieżność — to

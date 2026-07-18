@@ -39,6 +39,14 @@ Liczby pod ręką (gdyby pytał):
 | Średni czas sukcesu | 26 s | **18 s** |
 | Kroki kolizji z płytą / epizod | 15.8 | **2.4** |
 
+Aktualizacja (18.07): wykryty i naprawiony **trzeci reward hack** — model
+częściowo wciskał przyciski nadgarstkiem od boku (na sprzęcie: ryzyko kamery
+nadgarstkowej Gen3 + detekcja wciśnięć w TCP by tego nie zaliczyła). Reward
+v2.2: wciśnięcie liczy się tylko z kontaktem palców z grzybkiem (lustro
+detekcji nadzorcy), kara za kontakt nie-palcowy, wymuszony zamknięty gripper;
+trwa fine-tuning. Dobry przykład do opowiedzenia: symulacja musi odrzucać
+dokładnie te zachowania, których nie zaliczy sprzętowy detektor.
+
 ---
 
 ## 2. Proponowany plan sim2real (do przedstawienia)
@@ -69,6 +77,24 @@ Proponowane etapy (każdy z osobna testowalny):
 
 Szacunek czasu: ~2 tygodnie na etapy 1–2 (można zacząć od razu po uzyskaniu
 dostępu do sprzętu), etapy 3–4 zależne od dostępności robota.
+
+### Architektura nadzorcy (gdy padnie pytanie „jak konkretnie")
+
+Zasada: **nadzorca = wszystko, co w symulacji robi env poza fizyką** — RL
+odpowiada tylko za ruch, logika zadania i bezpieczeństwo są deterministyczne
+i audytowalne. Jedna pętla 20 Hz (jak `control_freq` w sim):
+
+1. raz na epizod: AprilTag → poza 6D boardu → pozycje/osie przycisków z CAD,
+2. co cykl: odczyt Kinovy → **detektor wciśnięcia** (głębokość z kinematyki
+   ≥ ~10–12 mm w TCP **i** siła ~4–5 N wzdłuż osi z `tool_external_wrench`
+   Kortexa, debounce 3–5 cykli) → maszyna stanów przełącza cel → budowa obs
+   (bit w bit jak w sim) → polityka → warstwa bezpieczeństwa → komenda
+   kartezjańska.
+
+Warstwa bezpieczeństwa poza polityką: box roboczy, limity prędkości, próg
+siły → stop, E-Stop operatora. Całość ~300–500 linii, testowalna bez robota
+(zamiast Kortexa podpinamy symulację — ten sam interfejs). Szczegóły + tabela
+odpowiedniości sim↔real: dokumentacja, rozdz. 5.1.
 
 ---
 
