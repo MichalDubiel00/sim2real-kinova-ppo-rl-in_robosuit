@@ -54,6 +54,13 @@ def parse_args():
                         help="zapis wideo offscreen zamiast okna (dziala bez ekranu)")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--camera", type=str, default="board_view")
+    parser.add_argument("--robot", type=str, default="Kinova3",
+                        help="Kinova3 (7DOF, stock) albo Kinova3_6DOF "
+                             "(uczelniany; modele 7DOF NIE dzialaja — inny "
+                             "wymiar obserwacji)")
+    parser.add_argument("--activation-depth", type=float, default=None,
+                        help="prog wcisniecia [m]; domyslnie 0.012 (7DOF), "
+                             "modele 6DOF trenowane na 0.010")
     return parser.parse_args()
 
 
@@ -74,10 +81,10 @@ def main():
     from envs.button_board import ButtonBoardEnv
 
     controller_cfg = suite.load_composite_controller_config(
-        controller="BASIC", robot="Kinova3")
+        controller="BASIC", robot=args.robot)
 
     env = ButtonBoardEnv(
-        robots="Kinova3",
+        robots=args.robot,
         controller_configs=controller_cfg,
         has_renderer=not args.record,
         render_camera=args.camera,
@@ -86,6 +93,7 @@ def main():
         horizon=1000,
         random_order=True,
         board_pos_noise=0.05,
+        activation_depth=args.activation_depth,
     )
     env.reset()
     if not args.record:

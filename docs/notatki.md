@@ -39,13 +39,23 @@ Liczby pod ręką (gdyby pytał):
 | Średni czas sukcesu | 26 s | **18 s** |
 | Kroki kolizji z płytą / epizod | 15.8 | **2.4** |
 
-Aktualizacja (18.07): wykryty i naprawiony **trzeci reward hack** — model
-częściowo wciskał przyciski nadgarstkiem od boku (na sprzęcie: ryzyko kamery
+Aktualizacja (18–19.07): wykryty **trzeci reward hack** — model częściowo
+wciskał przyciski nadgarstkiem od boku (na sprzęcie: ryzyko kamery
 nadgarstkowej Gen3 + detekcja wciśnięć w TCP by tego nie zaliczyła). Reward
 v2.2: wciśnięcie liczy się tylko z kontaktem palców z grzybkiem (lustro
-detekcji nadzorcy), kara za kontakt nie-palcowy, wymuszony zamknięty gripper;
-trwa fine-tuning. Dobry przykład do opowiedzenia: symulacja musi odrzucać
-dokładnie te zachowania, których nie zaliczy sprzętowy detektor.
+detekcji nadzorcy), kara za każdy nie-palcowy kontakt z przyciskiem, wymuszony
+zamknięty gripper. Fine-tuning v2.2 **zakończył się porażką pouczającą**
+(0/100 sukcesów): kara odpalała się też przy poprawnych dociskach (knuckle
+chwytaka muska grzybek), więc polityka nauczyła się unikać przycisków w ogóle.
+Reward v2.3 zawęża karę do ogniw ramienia (kontakt chwytaka wolny), bramka
+palcowa zostaje. Wynik fine-tuningu v2.3 (100 epizodów): **85/100 sukcesów**
+(stary model w tym env: 59/100, Fisher p ≈ 7·10⁻⁵), czas 23 s, misuse
+ramienia −75 %, kolizje −85 %; kontynuacja do 12M: plateau 85–87 %.
+Analiza sparowana: porażki dwóch najlepszych modeli niemal rozłączne
+(2/100 wspólnych) → brak systematycznie trudnych konfiguracji; na sprzęcie
+nadzorca może dodać retry (porażki to timeouty, nie stany terminalne). Dobra historia na meeting: nagroda musi
+odrzucać dokładnie te zachowania, których nie zaliczy sprzętowy detektor —
+**i żadnych więcej**, bo nadmiarowa kara wygasza samo zachowanie docelowe.
 
 ---
 
@@ -92,9 +102,39 @@ i audytowalne. Jedna pętla 20 Hz (jak `control_freq` w sim):
    kartezjańska.
 
 Warstwa bezpieczeństwa poza polityką: box roboczy, limity prędkości, próg
-siły → stop, E-Stop operatora. Całość ~300–500 linii, testowalna bez robota
-(zamiast Kortexa podpinamy symulację — ten sam interfejs). Szczegóły + tabela
-odpowiedniości sim↔real: dokumentacja, rozdz. 5.1.
+siły → stop, E-Stop operatora. Szczegóły + tabela odpowiedniości sim↔real:
+dokumentacja, rozdz. 5.1.
+
+**Status (19.07): nadzorca ZAIMPLEMENTOWANY i przetestowany bez robota**
+(moduł `supervisor/`, ~550 linii; symulacja podpięta w miejsce Kortexa przez
+ten sam interfejs). Test akceptacyjny 100 epizodów: pętla nadzorcy odtwarza
+wynik polityki (84 vs 85/100), a mechanizm **retry** (brak wciśnięcia 20 s →
+odjazd i ponowny dojazd) podnosi sukces do **92/100** przy budżecie 75 s —
+porażki polityki są przejściowe, nie terminalne. Ważny wynik negatywny:
+detekcja wciśnięcia z siły+kinematyki TCP okazała się niewykonalna dla stylu
+docisku obecnej polityki (pomiary w docs 5.2) → na sprzęcie detekcją
+pierwszego wyboru będzie zatrzask E-Stopa (spadek siły / wizja).
+Do labu zostaje TYLKO backend KortexIO (odczyt stanu + komenda twist).
+
+**Update (21.07): próba naprawy gracji kontaktu (reward v2.4) — PORAŻKA
+z pouczającą przyczyną.** Kary za obijanie się o zły przycisk i za prędkość
+kontaktu obniżyły sukces ze 85% do 70% (przy dalszym treningu do 43%),
+a jakość kontaktu wcale się nie poprawiła. Właściwa przyczyna (zweryfikowana
+pomiarem): maszyna stanów przeskakuje cel w kroku sukcesu, a palec jeszcze
+przez kilkanaście kroków dotyka wciśniętego przycisku podczas odjazdu —
+**93% "złych kontaktów" to ten artefakt**, więc kary odpalały się tuż po
+każdym udanym wciśnięciu i "skubały" bonus (RL: wciskanie przestaje się
+opłacać). Dobra historia na meeting o reward designie: kara sprzężona
+w czasie z zachowaniem docelowym wygasza to zachowanie, nawet jeśli
+semantycznie miała karać co innego. Poprawiony reward v2.5 (kary tylko za
+kontakt z niewciśniętym nie-celem) też odrzucony: best 83/100 (poniżej bazy
+90/100), a prawdziwe obijanie okazało się mieć bazę zaledwie ~2% kontaktów
+— kara nie ma na czym pracować. Po trzech porażkach (v2.2/v2.4/v2.5)
+wniosek do dyskusji na meetingu: gracji kontaktu nie wymuszać rewardem,
+tylko limitem prędkości TCP przy tablicy w warstwie bezpieczeństwa nadzorcy
+(działa identycznie w sim i na sprzęcie, nie psuje polityki). Model do
+sprzętu: v2.3 (`ppo_board_v23_12M.zip`, 90/100). Szczegóły: dokumentacja,
+rozdz. 6.5-6.6.
 
 ---
 

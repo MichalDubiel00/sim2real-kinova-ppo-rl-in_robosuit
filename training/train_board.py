@@ -115,10 +115,14 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(tb_log, exist_ok=True)
 
-    controller_cfg = suite.load_composite_controller_config(controller="BASIC", robot="Kinova3")
+    # "Kinova3" = stockowy 7DOF; "Kinova3_6DOF" = wariant uczelniany
+    # (rejestrowany w envs/__init__.py). UWAGA: zmiana robota zmienia wymiar
+    # obserwacji (6 vs 7 stawow w proprio) — modele nie sa przenosne.
+    robot = cfg.get("robot", "Kinova3")
+    controller_cfg = suite.load_composite_controller_config(controller="BASIC", robot=robot)
 
     env_kwargs = dict(
-        robots="Kinova3",
+        robots=robot,
         controller_configs=controller_cfg,
         has_renderer=False,
         has_offscreen_renderer=False,
@@ -131,6 +135,15 @@ def main():
         percep_pos_bias=cfg.get("percep_pos_bias", 0.005),
         percep_pos_noise=cfg.get("percep_pos_noise", 0.002),
         percep_axis_noise=cfg.get("percep_axis_noise", 0.02),
+        # Kurikulum/wersja rewardu (domyslne wartosci = reward v2.3):
+        finger_press_gate=cfg.get("finger_press_gate", True),
+        finger_misuse_cost=cfg.get("finger_misuse_cost", 0.0),
+        contact_speed_cost=cfg.get("contact_speed_cost", 0.0),
+        dense_align_coef=cfg.get("dense_align_coef", 0.05),
+        collision_cost=cfg.get("collision_cost", 5.0),
+        action_rate_cost=cfg.get("action_rate_cost", 0.02),
+        depress_shaping_k=cfg.get("depress_shaping_k", 0.0),
+        activation_depth=cfg.get("activation_depth", None),
     )
 
     vec_env = SubprocVecEnv(

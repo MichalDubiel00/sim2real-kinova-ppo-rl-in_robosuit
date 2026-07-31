@@ -1,0 +1,68 @@
+# Kurikulum 6DOF, ETAP 1: scratch w warunkach rewardu v2 (jak udany
+# scratch 7DOF "v4"): BEZ bramki palcowej, collision_cost 0.5,
+# action_rate_cost 0. Pierwsza proba (2026-07-29, 6M) biegla z karami
+# v2.1 (kolizja 5.0 + rate cost) i PADLA: 0 sukcesow, polityka nauczyla
+# sie omijac tablice (1 krok kolizji = -5/225 > caly shaping dolotu
+# ~10*0.7/225). Kary dokrecamy dopiero w etapie 2 (fine-tune).
+# Robot: Kinova3_6DOF (uczelniany wariant Gen3; obs 120, nie 128!).
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 3.0e-4
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Etap 1: reward v2-like — lagodna kolizja, bez kary za szarpanie,
+# bez bramki palcowej (kary v2.5 odrzucone na stale)
+finger_press_gate: false
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 0.5
+action_rate_cost: 0.0
+# Pomoc w odkryciu docisku (od 3.9M; wczesniej 0): potential-based shaping
+# na glebokosci wcisniecia celu, k*(depr_t - depr_{t-1}). Pelny docisk
+# 12 mm = +4.8 (1/5 bonusu za wcisniecie); trzymanie placi 0, puszczenie
+# oddaje. Polityka @3.9M dojezdzala na 2-3 cm i wgniatala do ~5 mm, ale
+# przez 3.9M krokow nigdy nie trafila 12 mm — brak gradientu na osi
+# glebokosci (u 7DOF w luzniejszej kinematyce odkrycie przyszlo samo).
+depress_shaping_k: 400.0
+# Prog wcisniecia 10 mm (2/3 skoku; domyslne 12/15 mm jest na granicy
+# fizycznej wykonalnosci dla Robotiq85+grzybek w pozach 6DOF: celowy
+# wyrownany docisk opuszka ~7 mm, nauczona technika skosna ~11 mm.
+# Realna glebokosc aktywacji nieznana; na sprzecie wciskanie wykrywa
+# elektrycznie nadzorca — prog w sim to parametr projektowy zadania).
+activation_depth: 0.010
+
+total_timesteps: 6_000_000
+horizon: 1000
+
+random_order: true
+board_pos_noise: 0.05
+percep_pos_bias: 0.005
+percep_pos_noise: 0.002
+percep_axis_noise: 0.02
+
+checkpoint_freq: 100_000
+# Osobny katalog — NIE nadpisujemy artefaktow 7DOF w logs/board!
+log_dir: logs/board_6dof/s1
+tensorboard_log: logs/tensorboard

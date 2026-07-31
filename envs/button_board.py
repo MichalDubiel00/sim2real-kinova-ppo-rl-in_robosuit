@@ -24,15 +24,50 @@ observed (real board is not wired); press detection on hardware comes
 from EEF force + push depth, and the task state machine (which button
 is next) is the supervisor's job — here simulated by the env itself.
 
-Press model (reward v2.2): a press only counts when a gripper FINGER geom
-is in contact with the button cap at the moment of activation — mirroring
-the hardware supervisor, which detects presses from force/kinematics at
-the TCP and would never register a press made with the wrist or arm.
-Non-finger robot contact with any button is penalised like a board
-collision (wrist-side pressing risks the Gen3 wrist camera and breaks
-the TCP-based force/depth estimates). The gripper is also forced closed
-(action dim stays 7; the gripper command is overridden) so the policy
-presses with a stiff, well-defined fingertip contact.
+Press model (reward v2.2/v2.3): a press only counts when a gripper FINGER
+geom is in contact with the button cap at the moment of activation —
+mirroring the hardware supervisor, which detects presses from
+force/kinematics at the TCP and would never register a press made with the
+wrist or arm. ARM-link contact with any button is penalised like a board
+collision (wrist-side pressing risks the Gen3 wrist camera and breaks the
+TCP-based force/depth estimates). Gripper housing/knuckle contact is NOT
+penalised (v2.3): it inevitably accompanies legitimate fingertip presses —
+penalising it (v2.2) taught the policy to avoid buttons altogether
+(0/100 successes). The gripper is also forced closed (action dim stays 7;
+the gripper command is overridden) so the policy presses with a stiff,
+well-defined fingertip contact.
+
+Contact quality (reward v2.4, FAILED — see v2.5): v2.3 successfully unblocked
+pressing but left NOTHING discouraging clumsy contact — buttons were hit at up
+to 1 m/s (visible as gripper jaws splaying apart on hard/off-axis impact,
+since the compliant Robotiq position controller loses to contact torque).
+v2.4 added FINGER_MISUSE_COST for touching a non-target button and
+CONTACT_SPEED_COST for fast contact with any button. Fine-tune result:
+success dropped 85%->70%->43% with more training, while contact-quality
+metrics stayed unchanged. ROOT CAUSE (found 2026-07-21): the target advances
+on the same step a press succeeds, so the lingering finger contact with the
+just-pressed cap during retreat counted as "wrong button" — measured ~93% of
+all "wrong contact" steps were this artefact, meaning both penalties fired
+right after every successful press and clawed back the press bonus. The
+policy learned that pressing is unprofitable — same collapse mechanism as
+v2.2. (The v2.3-era estimate "~25% of contact is bumping wrong buttons"
+suffered the same measurement artefact; genuine bumping into unpressed
+non-target buttons is ~2% of contact steps.)
+
+Contact quality (reward v2.5, ALSO REJECTED 2026-07-21): both penalties fire
+only on contact with a button that is neither the current target nor already
+pressed. Lingering post-press contact and the correct final press are
+penalty-free; only genuinely bumping a not-yet-pressed wrong button
+(optionally fast) is penalized. Result: best 83/100 (below the 90/100 v2.3
+baseline), still degrading with training; genuine bumping is only ~2% of
+contact steps so the penalty had nothing to work on. Conclusion after three
+failures (v2.2/v2.4/v2.5): contact grace belongs in the supervisor's
+SafetyLayer (TCP speed limit near the board), not in the reward. The v2.5
+penalties remain available as OPT-IN constructor params (finger_misuse_cost,
+contact_speed_cost); the DEFAULT configuration is reward v2.3. The finger
+press gate can be disabled (finger_press_gate=False) for curriculum stage 1
+when training from scratch (e.g. for the 6DOF robot — see
+envs/kinova3_6dof_robot.py).
 
 Coordinate frame:
   - Robot base at (0, 0, KINOVA_BASE_Z), facing +X
@@ -76,6 +111,60 @@ class ButtonBoardEnv(ManipulationEnv):
         reward_scale:      multiplier on total reward
         force_gripper_closed: if True, override the gripper action to
                            "close" every step (action_dim stays 7)
+        finger_press_gate: if True (v2.2+), a press only counts when a
+                           gripper finger touches the cap; False = any
+                           contact that depresses the button counts
+                           (curriculum stage 1 — the gate strangles
+                           exploration when training from scratch)
+        finger_misuse_cost: penalty per step of finger contact with a
+                           non-target, not-yet-pressed button (v2.5;
+                           default 0.0 = v2.3 semantics, v2.5 REJECTED)
+        contact_speed_cost: penalty coef for EEF speed above
+                           CONTACT_SPEED_THRESH during such contact
+                           (v2.5; default 0.0 = v2.3 semantics)
+        dense_align_coef:  weight of the axis-alignment dense term
+                           (v2.3: 0.05; v2.4/v2.5 used 0.15)
+        collision_cost:    penalty per step of arm/board contact
+                           (v2: 0.5 — negligible; v2.1+: 5.0). For
+                           FROM-SCRATCH training use the v2 value: with
+                           5.0 a single collision step (-5/225) outweighs
+                           the whole approach shaping (~10*0.7/225), so
+                           exploration learns to avoid the board and
+                           never discovers pressing (6DOF s1 failure,
+                           2026-07-30)
+        action_rate_cost:  penalty coef on ||a_t - a_{t-1}||^2 (v2.1+:
+                           0.02; v2 scratch: 0.0)
+        activation_depth:  cap depression [m] that counts as a press
+                           (default 0.012 = historical 7DOF setting).
+                           12 mm of the 15 mm travel is at the physical
+                           margin of the Robotiq85+cap geometry: an
+                           aligned centered pinch bottoms out on the
+                           base ring at ~0.5 mm, a deliberate aligned
+                           single-pad press reaches ~7 mm, the learned
+                           oblique fingertip technique ~11 mm (6DOF,
+                           2026-07-31). The real button's activation
+                           depth is unknown and press detection on
+                           hardware is electrical (supervisor) — the
+                           sim threshold is a task-design parameter,
+                           not ground truth. 6DOF uses 0.010.
+        base_x_offset:     shifts the robot base toward the wall [m]
+                           (default 0.0 = historical placement, base
+                           axis 0.50 m from the wall face). Sim2real
+                           knob: where Spot parks relative to the board.
+                           The 6DOF needs to stand closer — at the
+                           historical standoff its press poses require
+                           folding into self-collision (base/pedestal)
+                           or joint limits (docs 6.8).
+        depress_shaping_k: potential-based shaping on the depression of
+                           the CURRENT target: k * (depr_t - depr_{t-1}).
+                           Pays for pushing the cap in, pays back on
+                           release, zero for holding — same mechanism as
+                           the distance shaping, on the press axis.
+                           Discovery aid for 6DOF from-scratch training
+                           (approach learned by 2.5M steps, dents up to
+                           ~5 mm, but a full 12 mm press never sampled —
+                           the 6DOF's tighter dexterous workspace makes
+                           aligned pushes rare). Default 0.0 = v2.3.
     """
 
     N_BUTTONS = 5
@@ -99,7 +188,9 @@ class ButtonBoardEnv(ManipulationEnv):
     ]
 
     SPRING_STIFFNESS = 500.0  # N/m, matches button.xml
-    ACTIVATION_DEPTH = 0.012  # 12 mm depression = button pressed
+    ACTIVATION_DEPTH = 0.012  # domyslne activation_depth (7DOF/v2.3);
+    # 12 mm z 15 mm skoku jest przy geometrii Robotiq85+grzybek na granicy
+    # fizycznej wykonalnosci — patrz parametr activation_depth w __init__
 
     def __init__(
         self,
@@ -118,6 +209,15 @@ class ButtonBoardEnv(ManipulationEnv):
         percep_pos_noise=0.002,
         percep_axis_noise=0.02,
         force_gripper_closed=True,
+        finger_press_gate=True,
+        finger_misuse_cost=0.0,
+        contact_speed_cost=0.0,
+        dense_align_coef=0.05,
+        collision_cost=5.0,
+        action_rate_cost=0.02,
+        depress_shaping_k=0.0,
+        base_x_offset=0.0,
+        activation_depth=None,
         **kwargs,
     ):
         self.use_object_obs = use_object_obs
@@ -128,6 +228,16 @@ class ButtonBoardEnv(ManipulationEnv):
         self.percep_pos_noise = percep_pos_noise
         self.percep_axis_noise = percep_axis_noise
         self.force_gripper_closed = force_gripper_closed
+        self.finger_press_gate = finger_press_gate
+        self.finger_misuse_cost = finger_misuse_cost
+        self.contact_speed_cost = contact_speed_cost
+        self.dense_align_coef = dense_align_coef
+        self.collision_cost = collision_cost
+        self.action_rate_cost = action_rate_cost
+        self.depress_shaping_k = depress_shaping_k
+        self.base_x_offset = base_x_offset
+        self.activation_depth = (activation_depth if activation_depth is not None
+                                 else self.ACTIVATION_DEPTH)
 
         self._current_idx = 0
         self._pressed = [False] * self.N_BUTTONS
@@ -204,8 +314,10 @@ class ButtonBoardEnv(ManipulationEnv):
         self._board_y = self.BOARD_Y + yz_noise[0]
         self._board_z = self.BOARD_Z + yz_noise[1]
 
-        # Raise Kinova to Spot height
-        self.robots[0].robot_model.set_base_xpos([0, 0, self.KINOVA_BASE_Z])
+        # Raise Kinova to Spot height; base_x_offset = Spot parked closer
+        # to the wall (sim2real placement knob, see docstring)
+        self.robots[0].robot_model.set_base_xpos(
+            [self.base_x_offset, 0, self.KINOVA_BASE_Z])
 
         mujoco_arena = EmptyArena()
 
@@ -286,11 +398,20 @@ class ButtonBoardEnv(ManipulationEnv):
             self.sim.model.geom_name2id(f"btn{i}_base_collision")
             for i in range(self.N_BUTTONS)
         }
-        self._robot_geom_ids = {
+        # v2.3: misuse = only ARM links (robot0_*) on a button; gripper
+        # housing/knuckles must stay free to touch during fingertip presses
+        self._arm_geom_ids = {
             gid for gid in range(self.sim.model.ngeom)
-            if (self.sim.model.geom_id2name(gid) or "")
-            .startswith(("robot", "gripper"))
+            if (self.sim.model.geom_id2name(gid) or "").startswith("robot")
         }
+        # v2.4: geom -> button index, to tell WHICH button a finger touches
+        self._geom_to_btn = {}
+        for i in range(self.N_BUTTONS):
+            self._geom_to_btn[self._cap_geom_ids[i]] = i
+            self._geom_to_btn[self.sim.model.geom_name2id(
+                f"btn{i}_base_collision")] = i
+        eef_site_id = self.robots[0].eef_site_id[arm]
+        self._eef_site_name = self.sim.model.site_id2name(eef_site_id)
 
     # ------------------------------------------------------------------
     # Reset
@@ -320,6 +441,8 @@ class ButtonBoardEnv(ManipulationEnv):
         self._prev_dist = None
         self._prev_target = None
         self._prev_action = None
+        self._prev_depress = None
+        self._prev_depress_target = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -426,30 +549,48 @@ class ButtonBoardEnv(ManipulationEnv):
     # Reward
     # ------------------------------------------------------------------
 
-    # Reward v2.2 (potential-based shaping + finger-contact press gate) — wagi:
+    # Reward — wagi stale. Domyslna konfiguracja parametrow konstruktora
+    # (finger_misuse_cost=0, contact_speed_cost=0, dense_align_coef=0.05,
+    # finger_press_gate=True) = reward v2.3 (ostateczny; v2.5 ODRZUCONY,
+    # jego kary sa dostepne jako opt-in przez parametry konstruktora).
     SHAPING_K = 10.0        # nagroda za kazdy metr zblizenia do celu
     PRESS_BONUS = 25.0      # za wcisniecie biezacego celu
     COMPLETE_BONUS = 100.0  # za komplet 5 przyciskow
-    DENSE_COEF = 0.05       # sladowe gesty skladnik (gradient na starcie nauki)
+    DENSE_COEF = 0.05       # sladowy skladnik odleglosci (gradient na starcie nauki)
     ACTION_COST = 0.01      # kara za wielkosc akcji
-    ACTION_RATE_COST = 0.02  # kara za ZMIANE akcji miedzy krokami (szarpanie)
-    COLLISION_COST = 5.0    # kara za kontakt robota z plyta (v2: 0.5 — ignorowana)
+    ACTION_RATE_COST = 0.02  # domyslne action_rate_cost (v2.1+; v2 scratch: 0)
+    COLLISION_COST = 5.0    # domyslne collision_cost (v2.1+; v2 scratch: 0.5)
+    CONTACT_SPEED_THRESH = 0.15  # m/s; prog dla contact_speed_cost (v2.5)
     REWARD_NORM = 225.0     # ~max epizodu: 5*25 + 100
 
     def reward(self, action=None):
         tgt = self._target_btn()
         depress = self._depression(tgt)
 
+        # Potential-based shaping on the target's depression (see docstring).
+        # Uses the PRE-advance target; after a successful press the target
+        # switches, the guard skips one step, so the released (pressed)
+        # button never pays the shaping back — same guard as dist shaping.
+        r_depress = 0.0
+        if (self.depress_shaping_k
+                and self._prev_depress_target == tgt
+                and self._prev_depress is not None):
+            r_depress = self.depress_shaping_k * (depress - self._prev_depress)
+        self._prev_depress_target = tgt
+        self._prev_depress = depress
+
         # Advance sequence when current button is activated. v2.2 gate:
         # the press must come from a gripper finger on the cap — the
         # hardware supervisor detects presses at the TCP and would never
-        # register one made with the wrist or arm.
+        # register one made with the wrist or arm. The gate can be
+        # disabled (finger_press_gate=False) for curriculum stage 1:
+        # from-scratch training with the gate collapses to "do nothing".
         press_bonus = 0.0
         if (
             self._current_idx < self.N_BUTTONS
-            and depress >= self.ACTIVATION_DEPTH
+            and depress >= self.activation_depth
             and not self._pressed[tgt]
-            and self._finger_on_cap(tgt)
+            and (not self.finger_press_gate or self._finger_on_cap(tgt))
         ):
             self._pressed[tgt] = True
             self._current_idx += 1
@@ -478,22 +619,50 @@ class ButtonBoardEnv(ManipulationEnv):
         self._prev_target = tgt
         self._prev_dist = dist
 
-        r_dense = self.DENSE_COEF * (np.exp(-8.0 * dist) + np.exp(-3.0 * axis_err))
+        r_dense = (self.DENSE_COEF * np.exp(-8.0 * dist)
+                   + self.dense_align_coef * np.exp(-3.0 * axis_err))
         r_complete = self.COMPLETE_BONUS if all(self._pressed) else 0.0
-        r_collision = (-self.COLLISION_COST
+        r_collision = (-self.collision_cost
                        if (self._check_board_collision()
                            or self._check_button_misuse()) else 0.0)
+
+        # v2.5 (fixes v2.4): penalize clumsy gripper contact — bumping a
+        # wrong button, and doing so fast. Both penalties fire ONLY on
+        # contact with a button that is neither the current target NOR
+        # already pressed. The pressed-exclusion is critical: the target
+        # advances on the very step a press succeeds, while the finger
+        # keeps touching the just-pressed cap for several retreat steps —
+        # in v2.4 those steps counted as "wrong contact" and (with fast
+        # retreat) triggered the speed penalty too, so every successful
+        # press was immediately punished (~93% of all "wrong contact"
+        # steps were this artefact). Target contact stays penalty-free:
+        # taxing correct presses collapsed the policy twice (v2.2, v2.4).
+        r_finger_misuse = 0.0
+        r_contact_speed = 0.0
+        if self.finger_misuse_cost or self.contact_speed_cost:
+            touched = self._finger_touched_buttons()
+            wrong_touched = any(i != tgt and not self._pressed[i]
+                                for i in touched)
+            if wrong_touched:
+                r_finger_misuse = -self.finger_misuse_cost
+                if self.contact_speed_cost:
+                    speed = float(np.linalg.norm(
+                        self.sim.data.get_site_xvelp(self._eef_site_name)))
+                    if speed > self.CONTACT_SPEED_THRESH:
+                        r_contact_speed = -self.contact_speed_cost * (
+                            speed - self.CONTACT_SPEED_THRESH)
+
         r_action = 0.0
         if action is not None:
             action = np.asarray(action, dtype=np.float64)
             r_action = -self.ACTION_COST * float(np.sum(np.square(action)))
             if self._prev_action is not None:
                 delta = action - self._prev_action
-                r_action -= self.ACTION_RATE_COST * float(np.sum(np.square(delta)))
+                r_action -= self.action_rate_cost * float(np.sum(np.square(delta)))
             self._prev_action = action.copy()
 
-        total = (r_shape + r_dense + press_bonus + r_complete
-                 + r_collision + r_action)
+        total = (r_shape + r_dense + r_depress + press_bonus + r_complete
+                 + r_collision + r_action + r_finger_misuse + r_contact_speed)
 
         return total * self.reward_scale / self.REWARD_NORM
 
@@ -535,14 +704,28 @@ class ButtonBoardEnv(ManipulationEnv):
         return False
 
     def _check_button_misuse(self):
-        """True if a NON-finger robot geom (wrist, arm, gripper housing)
-        touches any button — pressing like that risks the wrist camera on
-        hardware and invalidates TCP-based force/depth estimates."""
+        """True if an ARM link geom (robot0_*) touches any button — pressing
+        with the wrist/arm risks the Gen3 wrist camera on hardware and
+        invalidates TCP-based force/depth estimates. Gripper geoms are
+        exempt (v2.3): knuckle/housing contact inevitably accompanies
+        legitimate fingertip presses, and penalising it (v2.2) taught the
+        policy to avoid buttons altogether."""
         for contact in self.sim.data.contact[: self.sim.data.ncon]:
             g1, g2 = contact.geom1, contact.geom2
             for r, b in ((g1, g2), (g2, g1)):
-                if (b in self._btn_geom_ids
-                        and r in self._robot_geom_ids
-                        and r not in self._finger_geom_ids):
+                if b in self._btn_geom_ids and r in self._arm_geom_ids:
                     return True
         return False
+
+    def _finger_touched_buttons(self):
+        """Set of button indices touched by ANY gripper finger geom this
+        step. The reward (v2.5) penalizes contact with buttons that are
+        neither the current target nor already pressed — genuine bumping
+        on the way to the target, not post-press lingering contact."""
+        touched = set()
+        for contact in self.sim.data.contact[: self.sim.data.ncon]:
+            g1, g2 = contact.geom1, contact.geom2
+            for a, b in ((g1, g2), (g2, g1)):
+                if a in self._finger_geom_ids and b in self._geom_to_btn:
+                    touched.add(self._geom_to_btn[b])
+        return touched

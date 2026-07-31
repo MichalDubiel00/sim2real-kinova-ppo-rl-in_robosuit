@@ -1,0 +1,55 @@
+# Kurikulum 6DOF, ETAP 2: fine-tune z bramka palcowa (reward v2.3).
+# Start: --resume logs/board_6dof/s1/ppo_board_final.zip (albo best_model
+# z s1 — wybrac po ewaluacji etapu 1).
+# Uzycie:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_s2.yaml \
+#       --resume logs/board_6dof/s1/ppo_board_final.zip --timesteps 4000000
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 3.0e-4
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Etap 2 = pelny reward v2.3: bramka palcowa ON, kary v2.1
+# (kolizja 5.0 + rate cost 0.02), bez kar v2.5
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+# Prog jak w etapie 1 (uzasadnienie w ppo_board_6dof_s1.yaml)
+activation_depth: 0.010
+
+total_timesteps: 4_000_000
+horizon: 1000
+
+random_order: true
+board_pos_noise: 0.05
+percep_pos_bias: 0.005
+percep_pos_noise: 0.002
+percep_axis_noise: 0.02
+
+checkpoint_freq: 100_000
+log_dir: logs/board_6dof/s2
+tensorboard_log: logs/tensorboard

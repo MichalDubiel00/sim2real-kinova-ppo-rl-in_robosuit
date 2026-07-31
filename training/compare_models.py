@@ -21,9 +21,10 @@ Metryki (na epizod, potem agregaty):
   - kroki: dlugosc epizodu (sredni czas sukcesu liczony TYLKO po sukcesach)
   - kolizja: liczba krokow z kontaktem geomu robota z plyta (przyciski sie
     nie licza — patrz ButtonBoardEnv._check_board_collision)
-  - misuse: liczba krokow z kontaktem NIE-palcowej czesci robota (nadgarstek,
-    ramie, obudowa grippera) z przyciskiem — v2.2 karze to jak kolizje,
-    a wcisniecie bez kontaktu palcow z grzybkiem nie liczy sie do sekwencji
+  - misuse: liczba krokow z kontaktem OGNIWA RAMIENIA (robot0_*) z przyciskiem
+    — v2.3 karze to jak kolizje (kontakt chwytaka jest dozwolony, bo
+    towarzyszy poprawnym docisnieciom palcami); wcisniecie bez kontaktu
+    palcow z grzybkiem nadal nie liczy sie do sekwencji
   - gladkosc: srednie ||a_t - a_{t-1}|| na krok (szarpanie komend, nie predkosc)
   - stuck: przekatna bounding boxa pozycji EEF z ostatnich 200 krokow < 3 cm
 """
