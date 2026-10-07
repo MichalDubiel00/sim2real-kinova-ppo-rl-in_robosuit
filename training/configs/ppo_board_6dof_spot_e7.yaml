@@ -1,0 +1,151 @@
+# 6DOF ETAP 7: SYGNAL NASYCENIA W OBSERWACJI (2026-10-07, docs 6.47)
+#
+# POWOD — sprostowanie wlasnego bledu. Przez trzy etapy (6.43, 6.45, 6.46) scigalem
+# metryke "zadania ponad limit" (74-78 %) jako patologie. To byl BLAD w stawianiu
+# problemu: skoro ogranicznik jest w petli, zadanie ponad limit daje DOKLADNIE ten
+# sam ruch co zadanie na limicie. Polityka jest w tym wymiarze obojetna — gradient
+# zerowy — wiec wartosc dryfuje i zadna kara jej nie ruszy. Nie "odmawiala", tylko
+# NIE MIALA CZEGO optymalizowac.
+#
+# ALE: wlasnie dlatego zgodnosc jest DARMOWA. Polityka komenderujaca na limicie
+# dostaje identyczny ruch co ta komenderujaca 3x powyzej — nie traci NIC. Tu, w
+# odroznieniu od gladkosci czy limitu przyspieszen, NIE MA KOMPROMISU. A jesli
+# polityka nauczy sie trzymac wewnatrz obwiedni, to na sprzecie przestaje miec
+# znaczenie, JAK firmware przycina — bo przycinanie nigdy sie nie wlacza. To usuwa
+# cala klase ryzyka transferu, nie tylko ja mierzy.
+#
+# CZEGO BRAKOWALO: polityka NIE WIDZI, ze zostala przycieta. W obserwacji ma predkosci
+# stawow, ale nie ma sygnalu "twoja komenda nie przeszla". Musiala wiazac kare
+# z wlasnym wyjsciem przez sama korelacje. Nowy sensor `joint_acc_saturation`
+# (6 wymiarow, 0 = w obwiedni, 1 = zadanie 2x ponad limit) daje jej te przeslanke wprost.
+#
+# ZMIANA WYMIARU OBS: 120 -> 132 (sensor wchodzi RAZ samodzielnie i RAZ w agregacie
+# object-state). Modele sprzed 2026-10-07 maja wejscie 120 i NIE wczytaja sie — stad
+# `obs_acc_saturation` domyslnie WYLACZONE, zeby nie zepsuc calej historii ewaluacji.
+#
+# WZNOWIENIE PRZEZ PRZESZCZEP WAG. Model e6a (obs 120) nie wczyta sie wprost, wiec
+# zbudowany zostal `spot_e6a/ppo_board_78123552_obs132.zip`: te same wagi, kolumny
+# nowych wejsc (47:53 i 113:119) WYZEROWANE. Polityka startuje zachowaniem
+# IDENTYCZNYM — zweryfikowane: max |roznica akcji| 3.0e-07 na losowych obserwacjach.
+#
+# ZMIENNA NIEZALEZNA: wylacznie obecnosc sygnalu w obserwacji. Kary zostaja na
+# wartosciach skalibrowanych w wariancie A (0.1 / 0.2), BEZ randomizacji limitu
+# (wariant B pogorszyl: zadania 70.8 -> 78.1 %).
+#
+# PUNKT WYJSCIA (e6a, n=40, pelna obwiednia): 39/40 (98 %), 15.2 s, kolizje 8.6
+# (mediana 4), misuse 0.6, zadania ponad limit 70.8 %.
+#
+# KRYTERIUM (zapisane PRZED biegiem): spadek zadan ponad limit PRZY ZACHOWANEJ
+# skutecznosci — bo zgodnosc jest darmowa, wiec utrata skutecznosci znaczylaby, ze
+# zadanie ponad limit JEDNAK cos polityce daje, czyli nasz ogranicznik nie jest
+# neutralny. To byloby odkrycie wazniejsze od samego wyniku.
+# Jesli zadania nie drgna mimo sygnalu w obserwacji, nastepnym krokiem jest
+# PODKRECENIE kary — przy braku kompromisu mozna ja zwiekszyc wielokrotnie bez
+# ryzyka dla zadania (moja ostroznosc w kalibracji 16 % byla nieuzasadniona).
+#
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e7.yaml \
+#       --resume logs/board_6dof/spot_e6a/ppo_board_78123552_obs132.zip --timesteps 8000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY poza kara za kontakt ze Spotem (ponizej).
+# Nowe w tym biegu: scena ma bryle korpusu i przednia kamere.
+init_qpos: [0.0, 1.4692, -2.2410, 3.1403, -2.0200, 3.1416]   # j1 = 0, symetryczna
+spot_body: true
+spot_front_cam: true
+# 0.13, NIE 5.0 jak tablica: przy zmierzonych 446 krokach kontaktu na epizod
+# kara wyniesie 446 x 0.13 / 225 = 0.26, czyli ~26 % nagrody zadania. Przy 5.0
+# byloby -9.9 i polityka natychmiast nauczylaby sie stac.
+spot_collision_cost: 5.0   # ZROWNANE z collision_cost tablicy
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.3          # z etapu 3 (kurikulum 0.02 -> 0.3 dobieglo konca)
+# Kara za zbyt szybki dojazd (docs 6.45). tau = czas, w ktorym ramie ma sie
+# zatrzymac: v_dop = dystans / tau. Koszt 50 wyskalowany pomiarem (16 % nagrody).
+approach_speed_cost: 0.0   # 6.45 nie dal nic
+approach_brake_time: 0.30
+# action_rate_cost_start USUNIETE: kurikulum dobieglo konca w etapie 3,
+# kara zostaje na stalej wartosci docelowej 0.3
+action_rate_anneal_steps: 2000000
+# Staly punkt odniesienia kurikulum (frac = 0). BEZ TEGO wznowienie z 53.42M
+# zaczeloby kare od nowa od 0.02 — ta sama pulapka co przy JointVelLimitCurriculum
+# (docs 6.32). Przy 53.42M frac = (53423552-50223552)/2M > 1, wiec kara = 0.3 od razu.
+action_rate_anneal_origin: 50223552
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.34   # Spot 24 cm dalej (docs 6.42)
+
+total_timesteps: 8000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+# Instrukcja Gen3 R07 tab. 48 — TWARDE limity przyspieszen, 6 DoF. NIE 1.0 z tab. 49:
+# tamta dotyczy wylacznie angular joystick / joint trajectory, a nasz tor to twist.
+joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0]
+# Wariant A: kara za nadmiar ZADANIA (liniowa, ograniczona do 3x limitu — wersja
+# kwadratowa bez ograniczenia dawala -274 na epizod, bo mierzyla impulsy kontaktu)
+# i premia za zapas, ktora daje gradient TAM, GDZIE POLITYKA JEST ZGODNA.
+# Skalibrowane roznica nagrod: kara 0.1 -> ok. 0.27 nagrody, premia 0.2 -> ok. 0.12.
+# Premia CELOWO mniejsza od kary: jest naliczana za krok, wiec przy przewadze
+# premii polityka moglaby przedluzac epizody, zeby jej nazbierac.
+acc_demand_cost: 0.1
+acc_margin_bonus: 0.2
+# Sygnal nasycenia w obserwacji: obs 120 -> 132 (docs 6.47)
+obs_acc_saturation: true
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/spot_e7
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale
+eef_twist_limits: [0.5, 0.8727]
+n_eval_envs: 2

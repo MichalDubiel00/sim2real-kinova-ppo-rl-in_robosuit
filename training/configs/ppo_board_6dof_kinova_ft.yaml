@@ -1,0 +1,82 @@
+# 6DOF: DOTRENOWANIE W OBWIEDNI ZGODNEJ Z INSTRUKCJA GEN3 R07 (2026-09-15, docs 6.38)
+# Start z modelu A (estop_curr/best_model, 16.01M): E-stop 20 N / 6 mm bez limitu 15/20 (h=2000),
+# z limitami wg instrukcji 1/20 i 1.15 wcisniecia/ep. Limity od kroku 0, bez kurikulum:
+# stawy 1.39/1.22 rad/s skalowane proporcjonalnie (tryb twist), narzedzie 0.5 m/s i 0.8727 rad/s.
+# Domyslne skale OSC (0.05 m, 0.5 rad). 8M krokow bez kryterium przerwania (przelom z LogStdClamp
+# wymagal wielu milionow krokow). Ewaluacja na 2 procesach co 200k (RAM: 8 env + 2 eval).
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_kinova_ft.yaml \
+#       --resume logs/board_6dof/estop_curr/best_model/best_model.zip --timesteps 8000000
+
+
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.1
+
+total_timesteps: 8000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/kinova_ft
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale
+eef_twist_limits: [0.5, 0.8727]
+n_eval_envs: 2

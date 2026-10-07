@@ -1,0 +1,61 @@
+# SWEEP f3_targetkl: FT z s2: target_kl 0.03 — kontrola, sigma nietknieta
+#
+# ODKRYCIE 2026-09-04 (docs 6.25): log_std ucieka w gore przez caly trening
+# (7DOF scratch_3M 1.00 -> v23_12M 13.71; 6DOF s2 21.32). Przy std~21 obcinane
+# jest 96 % skladowych akcji, |mu|=14.8 — polityka jest BANG-BANG. Premia
+# entropijna rosnie z sigma, a po obcieciu dalszy wzrost NIE zmienia zachowania:
+# darmowy dochod. INTERWENCJA: log_std_max (callback LogStdClamp).
+# ent_coef zostaje nominalny wszedzie tam, gdzie trzeba eksploracji — clamp juz
+# zamyka dochod, a ent_coef=0 grozi utknieciem w optimum "nie ruszaj sie".
+#
+# Ten bieg: target_kl=0.03
+# FINE-TUNE z s2/best_model — dziedziczy std=21.3 i |mu|=14.8. Sprawdza,
+# czy zdegenerowana polityka daje sie uratowac. Moze byc nienaprawialna:
+# przy nasyconych akcjach brak gradientu cofajacego srednia.
+# BAZA DO OCENY: 53/100 @h=1500 (s2/best_model w tym env, docs 6.24).
+
+algorithm: PPO
+policy: MlpPolicy
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+policy_kwargs:
+  net_arch:
+  - 256
+  - 256
+  activation_fn: tanh
+robot: Kinova3_6DOF
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+total_timesteps: 1500000
+horizon: 1000
+random_order: true
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+checkpoint_freq: 100000
+log_dir: logs/board_6dof/sweep/f3_targetkl
+tensorboard_log: logs/tensorboard
+target_kl: 0.03
+eval_freq: 100000
+n_eval_episodes: 20

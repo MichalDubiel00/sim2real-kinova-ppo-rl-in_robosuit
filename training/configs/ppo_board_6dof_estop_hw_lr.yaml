@@ -1,0 +1,81 @@
+# 6DOF: TRENING DOCELOWY NA SPRZET, OSTROZNA AKTUALIZACJA (2026-09-14, docs 6.34)
+# Jedyna zmiana wzgledem estop_hw: learning_rate 1e-4 -> 3e-5, target_kl 0.03 -> 0.01.
+# Powod: estop_hw na starcie konczyl czesc epizodow (ep_len 752), po ~150k stracil
+# (ep_len 1500, ep_rew -1.66) = zapominanie w trakcie fine-tune.
+# Fine-tune z ft_sc1_v23_long (15.91M) w obwiedni sprzetowej naraz:
+#  - limit predkosci stawow 0.8727 rad/s (firmware Gen3)
+#  - E-stop nieliniowy zatrzaskowy: 10 -> 20 N do 4 mm, spadek do 5 N,
+#    skok 6 mm, zatrzask = wcisniecie (decyzja uzytkownika: 20 N / 6 mm,
+#    z zapasem wzgledem przycisku z zawodow)
+# Reward v2.3 bez zmian. Poza startowa poza zakresem (supervisor).
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_estop_hw_lr.yaml \
+#       --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip --timesteps 6000000
+
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.1
+
+total_timesteps: 6000000
+horizon: 1500
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Firmware Gen3, ros2_kortex joint_limits.yaml
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+
+log_std_max: 0.0
+target_kl: 0.01
+
+checkpoint_freq: 100000
+eval_freq: 100000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/estop_hw_lr
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true

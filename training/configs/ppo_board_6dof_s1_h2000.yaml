@@ -1,0 +1,58 @@
+# Kurikulum 6DOF, ETAP 1c: jak s1, ale HORYZONT 2000 (2026-07-31).
+#
+# Powod (pomiar na checkpoincie 12.2M, 20 epizodow):
+#   horyzont 1000 -> 1.35 wcisniec/epizod, horyzont 2000 -> 1.85
+#   mediana tempa ~180 krokow/wcisniecie, ale rozrzut 27..1200
+# Polityka NIGDY nie zaliczyla kompletu, wiec nie doswiadczyla ani
+# COMPLETE_BONUS (+100, najwiekszy skladnik rewardu), ani terminacji
+# po sukcesie — uczy sie wylacznie z PRESS_BONUS (+25). Dluzszy epizod
+# daje szanse dojscia do konca sekwencji i zamkniecia petli kredytu.
+# Po opanowaniu sekwencji wrocic do 1000 (protokol porownywalny z 7DOF).
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 3.0e-4
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2-like + shaping glebokosci (jak s1)
+finger_press_gate: false
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 0.5
+action_rate_cost: 0.0
+depress_shaping_k: 400.0
+activation_depth: 0.010
+
+total_timesteps: 4_000_000
+horizon: 2000
+
+random_order: true
+board_pos_noise: 0.05
+percep_pos_bias: 0.005
+percep_pos_noise: 0.002
+percep_axis_noise: 0.02
+
+checkpoint_freq: 100_000
+log_dir: logs/board_6dof/s1
+tensorboard_log: logs/tensorboard

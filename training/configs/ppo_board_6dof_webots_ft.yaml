@@ -1,0 +1,160 @@
+# 6DOF: FINE-TUNE na GEOMETRII Z WEBOTS + podniesiony szum percepcji
+# (2026-09-01)
+#
+# Wznowienie z logs/board_6dof/s2/best_model/best_model.zip — modelu, ktory
+# dal 74/100 przy h=1500 na geometrii sprzed 01.09 i byl dotad "modelem na
+# sprzet". Ten bieg NIE jest proba poprawienia tamtego wyniku; jest proba
+# przeniesienia tej samej polityki na geometrie zgodna z realna arena.
+#
+# --- DLACZEGO geometria sie zmienila ---
+#
+# Dotychczasowe BOARD_Z=0.60 i KINOVA_BASE_Z=0.65 byly przyjete, nie
+# zmierzone: 0.60 pochodzilo z widelek regulaminu Rescue League ("Omni may be
+# mounted on the wall at 60 cm or floor"), 0.65 z oszacowania "Spot ~0.5 m +
+# mocowanie ~0.15 m". Model MASKOR (webots_ros2_spot, galaz kinova_gen3),
+# robiony przez zespol majacy fizyczna arene z omniboardem, daje inne liczby.
+# Zmierzone w dzialajacej symulacji (TF na zywo, nie z pliku swiata):
+#
+#   /Spot/gps                        -> base_link  z = 0.5073
+#   base_link -> gen3_base_link      = [0.256, 0.000, 0.112]
+#   => baza ramienia                          z = 0.619
+#   gniazda przyciskow (wezel DEF estop)  z = 0.561 .. 0.716, srodek 0.639
+#
+#   => tablica lezy 2 cm POWYZEJ bazy, a nie 5 cm ponizej jak dotad.
+#      Rozbieznosc 7 cm — poza board_pos_noise, wiec nie do nadrobienia
+#      randomizacja. Stad BOARD_Z 0.60->0.64, KINOVA_BASE_Z 0.65->0.62.
+#
+#   Promien gniazd od srodkowego: 0.106 / 0.110 / 0.110 (czwarte 0.092
+#   odrzucone jako niedokladnosc modelu) => 0.120 -> 0.107.
+#   Obrot 45 st. POTWIERDZONY niezaleznie: +45.0 / +135.4 / -45.0 / -135.0.
+#
+# NIE zmieniono geometrii samego grzybka (Webots Ø60x10 wystajacy 75 mm vs
+# nasz Ø44x24 wystajacy 53 mm), bo przyciski w Webots NIE MAJA FIZYKI —
+# ich wymiary sa tak samo niezweryfikowane jak nasze, a nasz model ma
+# dostrojony skok 15 mm, stiffness 500 i prog 12 mm. Do zmierzenia miarka
+# na arenie.
+#
+# --- DLACZEGO szum w gore ---
+#
+# Poprzednie poziomy opisywaly odczyt pozy z symulatora, nie z kamery.
+# Na sprzecie poze tablicy poda ArUco (pozniej YOLO), wiec:
+#   board_pos_noise    0.05  -> 0.06
+#   percep_pos_bias    0.005 -> 0.015   (blad pozy znacznika, 640x480)
+#   percep_pos_noise   0.002 -> 0.005   (drzenie miedzy klatkami)
+#   percep_axis_noise  0.02  -> 0.05    (blad ORIENTACJI z ArUco jest
+#                                        znacznie gorszy od pozycyjnego —
+#                                        niejednoznacznosc plaskiego
+#                                        znacznika, przeskoki normalnej)
+#   base_z_noise       (nowy) 0.03
+#
+# base_z_noise to NIE percepcja, tylko odpowiedz na jedyny ZMIERZONY tryb
+# awarii transferu. Ablacja diag_7dof_geometria.py (docs 6.22): ten sam
+# model, cofniete same wysokosci -> 0/25 przy 2.04 wcisniecia/ep, podczas
+# gdy cofniety sam obrot 45 st. -> 0/25 ale 0.12 wcisniecia/ep. Wzgledna
+# reprezentacja celu chroni przed poza TABLICY, ale nie przed poza BAZY,
+# bo obs zawiera takze bezwzgledne katy stawow i pozycje EEF. Na Spocie
+# wysokosc korpusu jest sterowalna (/Spot/set_height) i montaz nie bedzie
+# trafiony co do centymetra, wiec ta os musi byc w treningu.
+#
+# Szum jest WYLACZNIE w obserwacji — nagroda i detekcja wcisniecia licza
+# sie na prawdzie z symulatora. Inaczej polityka uczylaby sie oszukiwac
+# wlasny czujnik.
+#
+# --- RYZYKO i kryterium stopu ---
+#
+# 1. Bieg s2 KOLAPSOWAL po ~2.5M krokow (szczyt 59 % -> 0 %). Przyczyne
+#    (konflikt depress_shaping vs collision_cost) usunieto w 6.19 przez
+#    depress_clip_buffer, ale s3 pokazal, ze obciecie NIE zmienia przebiegu
+#    degradacji. Dlatego budzet to 2M, nie 6M, a checkpointy co 100k sa tu
+#    wazniejsze niz zwykle — model ze SZCZYTU, nie koncowy.
+# 2. Zadanie jest teraz TRUDNIEJSZE niz w s2: szum percepcji ~3x wyzszy
+#    plus nowa os randomizacji. Spadek skutecznosci wzgledem 74/100 jest
+#    OCZEKIWANY i nie jest sam w sobie powodem do przerwania — to inne
+#    zadanie, nie gorsza polityka.
+# 3. NIEZWERYFIKOWANE: czy wszystkie 5 przyciskow jest osiagalne przy
+#    najgorszej kombinacji randomizacji (przycisk na 0.797 przy bazie na
+#    0.591 = 21 cm powyzej bazy). Jesli rozbicie per przycisk pokaze jeden
+#    ze stalym 0 %, kandydatem jest zawezenie base_z_noise do 0.02.
+#
+# KRYTERIUM: jesli w ciagu 1M krokow sukces nie wroci powyzej ~20 %,
+# fine-tune nie wystarcza i trzeba scratchu na nowej geometrii.
+#
+# --- POMIAR ---
+#
+# PODAWAC HORYZONT PRZY KAZDEJ LICZBIE. Wynik z tego biegu NIE jest
+# porownywalny z 74/100 ani z 85/100 — to inna geometria I inny poziom
+# szumu. Model s2 na tej geometrii tez NIE jest wazna baza (patrz 6.22:
+# v23_12M dawal 0/100 po zmianie geometrii). Jesli potrzebny punkt
+# odniesienia, zmierzyc s2 w NOWYM env przed startem fine-tunu i podac
+# jako "przed dostrojeniem".
+#
+# URUCHOMIENIE:
+#   python training/train_board.py \
+#       --config training/configs/ppo_board_6dof_webots_ft.yaml \
+#       --resume logs/board_6dof/s2/best_model/best_model.zip \
+#       --timesteps 2000000
+#
+# UWAGA: --timesteps liczy kroki DODATKOWE (SB3 przy
+# reset_num_timesteps=False dolicza je do num_timesteps z checkpointu),
+# wiec total_timesteps ponizej jest przy wznowieniu IGNOROWANY.
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 1.0e-4         # nizszy niz 3e-4 w s2: fine-tune gotowej
+                              # polityki na przesunietej geometrii, nie
+                              # nauka od zera — chodzi o przesuniecie,
+                              # nie przebudowe
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — IDENTYCZNY jak s2. Zmienna niezalezna tego biegu to
+# geometria i szum, wiec reward musi zostac nietkniety.
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001    # obciecie z 6.19 (s2 go nie mial)
+activation_depth: 0.012
+base_x_offset: -0.10          # zweryfikowane na nowej geometrii:
+                              # 0/25 epizodow z kontaktem w kroku 0
+
+total_timesteps: 2_000_000
+horizon: 1000                 # taki sam jak s2 — pomiar przy h=1500
+                              # robimy dopiero compare_models
+
+random_order: true
+
+# Szum podniesiony pod realna percepcje (uzasadnienie w naglowku):
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+checkpoint_freq: 100_000
+log_dir: logs/board_6dof/webots_ft
+tensorboard_log: logs/tensorboard

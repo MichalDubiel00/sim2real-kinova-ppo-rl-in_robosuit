@@ -1,0 +1,77 @@
+# 6DOF ETAP D1: SKALA TRANSLACJI 0.02 m + OBROTU 0.1 rad, BEZ LIMITU W TRENINGU (2026-09-15, docs 6.36)
+# Start z modelu KONCOWEGO C1. Limit wylaczony jak w C1 (limit_start 100 rad/s, anneal 1e12),
+# ewaluacja od poczatku na 0.8727. Po nim D2 = ppo_board_6dof_pos002_hw.yaml z modelu KONCOWEGO D1.
+
+
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.1
+
+total_timesteps: 3000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Firmware Gen3, ros2_kortex joint_limits.yaml
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 100000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/pos002_nolim
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+osc_pos_output_max: 0.02
+osc_rot_output_max: 0.1
+joint_vel_limits_start: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+joint_vel_anneal_steps: 1000000000000

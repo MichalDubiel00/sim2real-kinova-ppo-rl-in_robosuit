@@ -1,0 +1,72 @@
+# PRZEDLUZENIE ft_sc1_v23 do ~16M krokow — test przy DOPASOWANYM BUDZECIE.
+#
+# Przemiat 2026-09-05 (docs 6.25) dal wynik pozornie jednoznaczny: modele
+# nasycone 53-57/100, modele ze sterowaniem proporcjonalnym 0-17/100. Ale
+# nasycenie jest IDEALNIE SKORELOWANE z dlugoscia treningu (s2/f1/f3 mialy
+# 16.4M krokow, sc1 4.0M, ft_sc1_v23 5.9M), bo eksplozja sigma rozwija sie
+# przez miliony krokow. Nie da sie wiec rozdzielic "nasycenie pomaga" od
+# "wiecej krokow pomaga".
+#
+# Porownanie z historyczna krzywa (docs 6.17) sugeruje, ze biegi z clampem sa
+# SZYBSZE, nie gorsze:
+#     historia:  6.0-6.5M -> 0 %   6.5-7.0M -> 3 %   8.0-8.5M -> 16 %
+#     z clampem: sc1 4.0M -> 15 %  ft_sc1_v23 5.9M -> 17 %
+#
+# Ten bieg wznawia ft_sc1_v23 (5.9M) o kolejne 10M -> ~16M, czyli tyle co
+# s2/best_model (16.4M). DOPIERO to porownanie jest uczciwe.
+#
+# Kryterium: jesli przy ~16M wynik dojdzie w okolice 53/100, hipoteza o
+# szkodliwosci nasycenia byla BLEDNA. Jesli wyraznie przebije - clamp dziala,
+# tylko potrzebowal budzetu. Niezaleznie od procentu model z clampem ma
+# sterowanie proporcjonalne (|mu|=1.06, 48 % nasycenia zamiast 96 %), wiec na
+# sprzecie powinien byc gladszy - a gracji nie dalo sie naprawic rewardem
+# (6.5-6.6, 3 nieudane proby).
+#
+# BAZA DO OCENY: 53/100 @h=1500 (s2/best_model, 16.4M krokow).
+
+algorithm: PPO
+policy: MlpPolicy
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+policy_kwargs:
+  net_arch:
+  - 256
+  - 256
+  activation_fn: tanh
+robot: Kinova3_6DOF
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+total_timesteps: 10000000
+horizon: 1000
+random_order: true
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+checkpoint_freq: 100000
+log_dir: logs/board_6dof/sweep/ft_sc1_v23_long
+tensorboard_log: logs/tensorboard
+log_std_max: 0.0
+target_kl: 0.03
+eval_freq: 100000
+n_eval_episodes: 20

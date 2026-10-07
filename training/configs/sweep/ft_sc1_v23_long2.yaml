@@ -1,0 +1,62 @@
+# KONTYNUACJA ft_sc1_v23_long o kolejne 3M -> ~19M.
+#
+# Przebieg do 15.9M (docs 6.25): ep_len_mean 984 (5.9M) -> 920 (9.5M) -> 721
+# (15M), nachylenie -42.2 kroku/1M przy r=-0.92. Zmierzony sukces przy 9.5M:
+# 26/100 @h=1500, przy kolizyjnosci 14.9 kroku/ep (baza s2: 37.6) i gladkosci
+# 1.315 (baza 2.884).
+#
+# UWAGA: ostatnie 2M sa PLASKIE (728 -> 721 -> 721). Albo polityka dobila do
+# sufitu, albo ep_len dobilo do fizycznego minimum (~700 krokow na 5 przyciskow).
+# Ta kontynuacja rozstrzyga, czy jest jeszcze zapas.
+#
+# Kryterium: jesli po 3M ep_len nie zejdzie ponizej ~700 ANI sukces nie wzrosnie,
+# to jest sufit i watek zamykamy.
+#
+# BAZA: s2/best_model 53/100 @h=1500 przy 16.4M krokow (docs 6.24).
+
+algorithm: PPO
+policy: MlpPolicy
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+policy_kwargs:
+  net_arch:
+  - 256
+  - 256
+  activation_fn: tanh
+robot: Kinova3_6DOF
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+total_timesteps: 3000000
+horizon: 1000
+random_order: true
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+checkpoint_freq: 100000
+log_dir: logs/board_6dof/sweep/ft_sc1_v23_long2
+tensorboard_log: logs/tensorboard
+log_std_max: 0.0
+target_kl: 0.03
+eval_freq: 100000
+n_eval_episodes: 20

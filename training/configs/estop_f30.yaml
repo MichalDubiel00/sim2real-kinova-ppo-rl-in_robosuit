@@ -1,0 +1,12 @@
+# Profil E-stopu z sila szczytowa 30 N — test marginesu wobec karty katalogowej
+# (karta: skok 5 mm, sila 25 N, zatrzask przy pelnym skoku). Trening szedl na 20 N,
+# wiec modelowalismy przycisk LATWIEJSZY niz prawdziwy.
+activation_depth: 0.0059
+button_estop_profile:
+  f_start: 15.0
+  f_peak: 30.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true

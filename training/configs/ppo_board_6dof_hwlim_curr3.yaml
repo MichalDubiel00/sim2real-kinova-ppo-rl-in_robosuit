@@ -1,0 +1,90 @@
+# 6DOF: KURIKULUM PO LIMICIE, START OD 3.0 (2026-09-13) — PRZYGOTOWANY, NIE URUCHOMIONY
+#
+# Restart biegu hwlim_curr (start 2.0). Jedyne zmiany: start 3.0, zacieśnianie 4M
+# zamiast 2.5M, budżet 5M zamiast 4M. Reszta identyczna — patrz naglowek
+# ppo_board_6dof_hwlim_curr.yaml.
+#
+# --- DLACZEGO (docs 6.32) ---
+#
+# depress_ft pod naprawionym limitem, etap 1, h=2000, 20 epizodow:
+#   brak 15/20 4.60 | 4.0 14/20 4.30 | 3.0 12/20 4.15 | 2.0 2/20 1.85 | 1.5 0/20 0.70
+#   -> URWISKO miedzy 3.0 a 2.0. Start 2.0 byl tuz za nim.
+#
+# Checkpoint hwlim_curr 14.53M przy swoim limicie 1.8647: 0/20, 1.45 wcisniecia vs
+# depress_ft 0/20, 1.30, pary 6:5, p=1 — brak adaptacji. Przy tym limicie model
+# startowy nie ma sukcesow, wiec PPO nie dostaje sygnalu ukonczenia (ep_len ~1890/2000).
+# Start 3.0 daje 12/20 ukonczen — sygnal jest od pierwszego rolloutu.
+#
+# Zacieśnianie 4M: odcinek 3.0 -> 2.0 to 1.0 / 2.1273 = 47 % zakresu, czyli ~1.9M
+# krokow na przejscie przez urwisko (w starym biegu bylby to caly start). 1M na
+# koncu z limitem docelowym 0.8727.
+#
+# KRYTERIUM na checkpointach (parowane z depress_ft przy TYM SAMYM limicie):
+#   wcisniecia/ep wyraznie powyzej depress_ft, szczegolnie gdy limit schodzi ponizej
+#   2.0, gdzie depress_ft traci sukcesy. Brak roznicy przy ~2.0 = kurikulum nie dziala.
+#
+# URUCHOMIENIE (po zatrzymaniu hwlim_curr):
+#   python training/train_board.py \
+#       --config training/configs/ppo_board_6dof_hwlim_curr3.yaml \
+#       --resume logs/board_6dof/depress_ft/ppo_board_final.zip \
+#       --timesteps 5000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 1.0e-4
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward ETAPU 1 — jak depress_ft
+force_gripper_closed: false
+finger_press_gate: false
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 0.5
+action_rate_cost: 0.0
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+
+total_timesteps: 5000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# KURIKULUM LIMITU — jedyna nowa zmienna
+joint_vel_limits_start: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+joint_vel_anneal_steps: 4000000
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 100000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/hwlim_curr3
+tensorboard_log: logs/tensorboard

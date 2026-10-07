@@ -1,0 +1,151 @@
+# 6DOF ETAP 6ab — POLACZENIE WARIANTOW A i B (2026-10-06, docs 6.46)
+#
+# DLACZEGO LACZYC. Warianty adresuja ROZNE rzeczy, nie to samo dwa razy:
+#   A (kara za zadanie + premia za zapas) zadzialal na OBJAW: kolizje 20.9 -> 8.6
+#     kroku/ep (pary 25:12, p=0.047, mediana 9 -> 4), skutecznosc 38/40 -> 39/40,
+#     czas 17.5 -> 15.2 s. ALE NIE zrobil tego, do czego byl zaprojektowany:
+#     zadania ponad limit 74.1 % -> 70.8 %, czyli w granicach szumu — polityka nadal
+#     polega na przycinaniu.
+#   B (losowanie limitu per epizod) atakuje MECHANIZM: skoro polityka dostroila sie
+#     do jednej implementacji nasycenia, randomizacja odbiera temu sens.
+#
+# SKLADAJA SIE POPRAWNIE. Kara w A liczy nadmiar wzgledem `self.joint_acc_limits`,
+# a B te wartosc losuje — polityka uczy sie "miesc sie w limicie, JAKIKOLWIEK
+# dostaniesz". Bez zmian w kodzie.
+#
+# KALIBRACJA PRZENOSI SIE (sprawdzone, bo nadmiar jest WZGLEDNY): wklad czlonu A to
+# -0.164 przy limicie stalym i -0.135 przy losowanym. Wspolczynniki bez zmian.
+#
+# ILE KOSZTUJE SAMA RANDOMIZACJA: nagroda modelu e6a bez czlonu spada z +0.83
+# (limit staly 5.2) na +0.19 (limit losowany) — polityka uczona na 5.2 radzi sobie
+# zle przy 3.12. To miara kruchej specjalizacji, ktora B ma wyleczyc.
+#
+# START Z WYNIKU A (78.12M), NIE z e5. Rozwazany byl start z e5, bo wtedy roznica
+# wobec A bylaby DOKLADNIE wkladem B. Odrzucone: warunek A+B jest znacznie
+# trudniejszy (randomizacja sama zbija nagrode 4x), wiec start z gorszego punktu
+# grozilby wynikiem negatywnym, ktory mowi tylko "4M to za malo z tego miejsca" —
+# a taki bezwartosciowy wynik zdarzyl sie w tej kampanii juz dwa razy.
+#
+# ⚠ ATRYBUCJA WYMAGA KONTROLI. Roznica wobec e6a zawiera WKLAD B **I** 8M
+# dodatkowego treningu. Z etapu 4 wiadomo, ze sam dluzszy trening potrafi duzo dac
+# (ostatnie 1.2M zdjelo tam najwiecej z calego biegu). Zeby przypisac efekt
+# randomizacji, trzeba dociagnac SAMO A o te same 8M jako kontrole.
+# NIE czytac roznicy e6ab - e6a jako "wkladu randomizacji" bez tej kontroli.
+#
+# PUNKTY ODNIESIENIA (n=40, pelna obwiednia, te same ziarna 1234+):
+#   e5  (74.12M): 38/40 (95 %), 17.5 s, kolizje 20.9 (mediana 9), zadania 74.1 %
+#   e6a (78.12M): 39/40 (98 %), 15.2 s, kolizje  8.6 (mediana 4), zadania 70.8 %
+#
+# KRYTERIUM (zapisane PRZED biegiem): czy przy zachowanych kolizjach (< 10 kroku/ep)
+# i skutecznosci (>= 90 %) spada odsetek zadan ponad limit, mierzony BEZ ogranicznika
+# przy limicie BAZOWYM 5.2. Jesli zadania zostana ~70 %, randomizacja tez nie uczy
+# obwiedni i watek "jak zmusic polityke, zeby przestala polegac na przycinaniu"
+# jest domkniety negatywnie — trzema roznymi probami.
+#
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e6ab.yaml \
+#       --resume logs/board_6dof/spot_e6a/checkpoints/ppo_board_78123552_steps.zip \
+#       --timesteps 8000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY poza kara za kontakt ze Spotem (ponizej).
+# Nowe w tym biegu: scena ma bryle korpusu i przednia kamere.
+init_qpos: [0.0, 1.4692, -2.2410, 3.1403, -2.0200, 3.1416]   # j1 = 0, symetryczna
+spot_body: true
+spot_front_cam: true
+# 0.13, NIE 5.0 jak tablica: przy zmierzonych 446 krokach kontaktu na epizod
+# kara wyniesie 446 x 0.13 / 225 = 0.26, czyli ~26 % nagrody zadania. Przy 5.0
+# byloby -9.9 i polityka natychmiast nauczylaby sie stac.
+spot_collision_cost: 5.0   # ZROWNANE z collision_cost tablicy
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.3          # z etapu 3 (kurikulum 0.02 -> 0.3 dobieglo konca)
+# Kara za zbyt szybki dojazd (docs 6.45). tau = czas, w ktorym ramie ma sie
+# zatrzymac: v_dop = dystans / tau. Koszt 50 wyskalowany pomiarem (16 % nagrody).
+approach_speed_cost: 0.0   # 6.45 nie dal nic
+approach_brake_time: 0.30
+# action_rate_cost_start USUNIETE: kurikulum dobieglo konca w etapie 3,
+# kara zostaje na stalej wartosci docelowej 0.3
+action_rate_anneal_steps: 2000000
+# Staly punkt odniesienia kurikulum (frac = 0). BEZ TEGO wznowienie z 53.42M
+# zaczeloby kare od nowa od 0.02 — ta sama pulapka co przy JointVelLimitCurriculum
+# (docs 6.32). Przy 53.42M frac = (53423552-50223552)/2M > 1, wiec kara = 0.3 od razu.
+action_rate_anneal_origin: 50223552
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.34   # Spot 24 cm dalej (docs 6.42)
+
+total_timesteps: 8000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+# Instrukcja Gen3 R07 tab. 48 — TWARDE limity przyspieszen, 6 DoF. NIE 1.0 z tab. 49:
+# tamta dotyczy wylacznie angular joystick / joint trajectory, a nasz tor to twist.
+joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0]
+# Wariant A: kara za nadmiar ZADANIA (liniowa, ograniczona do 3x limitu — wersja
+# kwadratowa bez ograniczenia dawala -274 na epizod, bo mierzyla impulsy kontaktu)
+# i premia za zapas, ktora daje gradient TAM, GDZIE POLITYKA JEST ZGODNA.
+# Skalibrowane roznica nagrod: kara 0.1 -> ok. 0.27 nagrody, premia 0.2 -> ok. 0.12.
+# Premia CELOWO mniejsza od kary: jest naliczana za krok, wiec przy przewadze
+# premii polityka moglaby przedluzac epizody, zeby jej nazbierac.
+acc_demand_cost: 0.1
+acc_margin_bonus: 0.2
+# Wariant B dolozony: limit losowany per epizod, mnoznik bazy [0.6, 1.4]
+joint_acc_limits_noise: [0.6, 1.4]
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/spot_e6ab
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale
+eef_twist_limits: [0.5, 0.8727]
+n_eval_envs: 2

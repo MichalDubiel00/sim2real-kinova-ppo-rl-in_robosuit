@@ -1,0 +1,90 @@
+# 6DOF: KONTYNUACJA hwlim_curr3 PO AWARII OOM (2026-09-14) — PRZYGOTOWANY, NIE URUCHOMIONY
+#
+# Bieg hwlim_curr3 padl 2026-09-14 o 02:10 (OOM — wyciek z haka limitu + zewnetrzna
+# ocena w chwili wbudowanej ewaluacji; oba usuniete, docs 6.32). Ostatni checkpoint
+# 16 125 856 = punkt kontrolny 2.
+#
+# Punkt 2 (limit 1.9895): checkpoint 2/20, 2.25 wcisniecia vs depress_ft 0/20, 1.15;
+# pary 11:3, p = 0.057 -> kurikulum NIE obalone. Kontynuacja tego samego harmonogramu.
+#
+# Zmiany wzgledem ppo_board_6dof_hwlim_curr3.yaml:
+#   - joint_vel_anneal_origin: 14225856 — limit kontynuuje od 1.9895, nie od 3.0
+#   - log_dir hwlim_curr3b — nowy EvalCallback nie nadpisze best_model poprzedniego biegu
+# Harmonogram identyczny: 3.0 -> 0.8727 liniowo przez 4M od kroku 14 225 856,
+# potem limit docelowy do 19 225 856.
+#
+# log_std: checkpoint ma juz sigma = 1.0 (clamp od startu hwlim_curr3), wiec skoku KL
+# w pierwszej iteracji NIE nalezy sie spodziewac — jesli wystapi, to nowy problem.
+#
+# URUCHOMIENIE:
+#   python training/train_board.py \
+#       --config training/configs/ppo_board_6dof_hwlim_curr3b.yaml \
+#       --resume logs/board_6dof/hwlim_curr3/checkpoints/ppo_board_16125856_steps.zip \
+#       --timesteps 3100000
+#   (16 125 856 + 3 100 000 = 19 225 856 = 14 225 856 + 5M)
+#
+# Oceny zewnetrzne checkpointow: z OPOZNIENIEM po pojawieniu sie pliku (wbudowana
+# ewaluacja startuje na tej samej granicy 100k), nie przy otwartym Webeksie.
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 1.0e-4
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward ETAPU 1 — jak depress_ft
+force_gripper_closed: false
+finger_press_gate: false
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 0.5
+action_rate_cost: 0.0
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+
+total_timesteps: 5000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# KURIKULUM LIMITU — jedyna nowa zmienna
+joint_vel_limits_start: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+joint_vel_anneal_steps: 4000000
+# Staly krok odniesienia kurikulum = start biegu hwlim_curr3 (resume z depress_ft).
+# Bez tego --resume z 16 125 856 zaczalby zacieśnianie od 3.0 (docs 6.32).
+joint_vel_anneal_origin: 14225856
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 100000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/hwlim_curr3b
+tensorboard_log: logs/tensorboard

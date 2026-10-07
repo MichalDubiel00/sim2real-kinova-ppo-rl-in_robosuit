@@ -1,0 +1,195 @@
+# 6DOF ETAP 2: POZA STARTOWA + ODSUNIETY POSTOJ SPOTA (2026-10-03, docs 6.42)
+#
+# POWOD. Dotychczasowa poza startowa ma chwytak PIONOWO W DOL (os narzedzia
+# [0.002, 0, -1], align 89.9 st.). Kamera nadgarstkowa Gen3 patrzy wzdluz osi
+# narzedzia, wiec w tej pozie widzi PODLOGE: katy do przyciskow 48.8-120.6 st.
+# przy polowie FOV 32.5 st. => 0/5 w kadrze, gorne przyciski DOSLOWNIE ZA KAMERA.
+# Percepcja na sprzecie (ArUco -> nadzorca -> target_relative_pos) nie ma z czego
+# wystartowac. W symulacji bylo to niewidoczne, bo env podaje cel z informacji
+# uprzywilejowanej. Dodatkowo bryla Spota odcina dojazd do DOLNYCH przyciskow:
+# btn3 spada z 38/40 (bez Spota) na 21/40.
+#
+# CO ZMIENIONE (dwie rzeczy, obie geometryczne):
+#   base_x_offset  -0.10 -> -0.34   (Spot stoi 24 cm dalej od tablicy)
+#   init_qpos      [0, 0.65, -1.89, 0, -0.6, -pi/2]
+#               -> [-0.4, 1.4806, -2.5, 2.5145, -2.02, 3.1416]
+#
+# DLACZEGO ODSUNIECIE. Z bliska tablica rozpościera sie na duzy kat, wiec poza
+# celujaca w nia wymaga pokreconej galezi kinematyki (j1 ~ -3.04, ramie nad
+# wlasnym barkiem) — wszystkie takie pozy DRYFUJA 0.35-2.69 rad w 30 krokach
+# zerowej akcji, czyli OSC ich nie utrzymuje. Zmierzone wzgledem odleglosci:
+#   offset   manipulowalnosc najgorszego gniazda   zapas limitow   kat btn0
+#   -0.18              0.0234                         0.050 rad      —
+#   -0.26              0.0357                         0.192 rad    21.1 st.
+#   -0.34              0.0502                         0.389 rad    18.0 st.
+# Dostep ROSNIE z odlegloscia (z bliska ramie sie sklada i pracuje blisko
+# osobliwosci). Zasieg Gen3 6DOF ~0.90 m, wymagany przy -0.34 to 0.78 m.
+#
+# ZWERYFIKOWANE przy PELNYM szumie treningowym (5 ziaren):
+#   kat btn0 od osi kamery 18.0 st. (5.1-24.9)   przyciskow w kadrze 3-5
+#   align 17.7 st. (bylo 89.9)   dystans do celu 0.256 m (trening widzial do 0.296)
+#   dryf 30 krokow 0.0155 rad    kontakt przy starcie 0/5    wymiar obs 120
+#
+# Kryterium kadru ZLUZOWANE swiadomie: jeden znacznik ArUco daje poze 6D, a uklad
+# gniazd omniboarda jest znany, wiec do wyliczenia WSZYSTKICH pieciu wystarczy
+# jedna detekcja tablicy (tak dziala detect_dex_board.py). Nie trzeba 5/5 w kadrze.
+#
+# Reszta BEZ ZMIAN wzgledem etapu 1b (spot_collision_cost 5.0, action_rate_cost
+# 0.02), zeby zmienna niezalezna byla sama geometria.
+#
+# UWAGA: scena i poza sa inne niz w CALEJ dotychczasowej historii — wyniki
+# NIEPOROWNYWALNE z biegami 6.1-6.41. Potrzebny nowy punkt odniesienia.
+#
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e2.yaml \
+#       --resume logs/board_6dof/spot_e1b/checkpoints/ppo_board_38923552_steps.zip \
+#       --timesteps 12000000
+# kupila bezpieczenstwo od tablicy, placac zadaniem I ocieraniem o platforme.
+# Koncowka biegu sie rozsypywala (ewaluacje 0.49 -> -0.71 -> -2.53), bieg
+# zatrzymany na 33.00M.
+#
+# ZMIANA: spot_collision_cost 0.13 -> 5.0, czyli DOKLADNIE tyle co tablica.
+# Dotkniecie platformy przestaje byc tansze od dotkniecia tablicy, wiec
+# asymetria, ktora polityka wykorzystala, znika.
+#
+# BUDZET NAGRODY NA STARCIE (z checkpointu +2M, gdzie kontakt = 151.7 kroku/ep):
+#     zadanie            +1.0 (epizod kompletny, REWARD_NORM 225)
+#     tablica  50.1 x 5.0 / 225   = -1.11
+#     Spot    151.7 x 5.0 / 225   = -3.37
+#     razem                        = -3.5
+# To GLEBOKA dziura i realne ryzyko, ze polityka nauczy sie NIERUCHOMIEC — tryb
+# awarii z 6.20. Dlatego bieg jest DLUZSZY (12M zamiast 6M, decyzja uzytkownika):
+# przy etapie 1 polityka odrobila -1.25 do okolic zera w 400k krokow, wiec
+# zjechanie z -3.5 powinno zajac rzad 1-2M, a reszta idzie na zadanie.
+# ep_rew_mean i punkty ewaluacji WYSTARTUJA GLEBOKO UJEMNE — to arytmetyka, nie awaria.
+#
+# action_rate_cost ZOSTAJE 0.02. Gladkosc to osobny etap; przy etapie 1 pogorszyla
+# sie 1.247 -> 1.424, a krzywa filtru EMA (6.41) pokazuje, ze szarpanie jest NOSNE
+# (wygladzenie do ||da|| 0.34 podnosi kolizyjnosc 56x). Dwie kary naraz = brak atrybucji.
+#
+# KRYTERIA (zapisane PRZED biegiem):
+#   sukces etapu:   kolizje < 20 I kontakt ze Spotem < 20 I skutecznosc > 70 % (n=40)
+#   przerwac:       jesli przy +2M skutecznosc < 50 % (ponizej punktu wyjscia etapu 1)
+#                   albo ep_len przyklei sie do 2000 przy std < 0.5 (nieruchomienie)
+#   punkty kontrolne: +2M (32.02M), +4M (34.02M), +8M (38.02M)
+#
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e1b.yaml \
+#       --resume logs/board_6dof/spot_e1/checkpoints/ppo_board_30023552_steps.zip \
+#       --timesteps 12000000
+# GEOMETRIA (zmierzona, nie przyjeta):
+#   korpus: suma AABB 16 pudelek `boundingObject BODY_BO` z protos/Spot.proto
+#           Z UWZGLEDNIENIEM obrotow szesciu z nich. W ramce podstawy ramienia
+#           X -0.729..+0.266, Y +-0.139, Z -0.202..+0.002.
+#   kamera: Kinect z Webotsa, wariant `foot FALSE` => geometria kolizyjna to
+#           LISTWA SENSORA Box 0.28 x 0.038 x 0.064 (nie klocek 0.084 ze stojaka).
+#           W ramce ramienia X +0.209..+0.273, Y +-0.140, Z -0.026..+0.012.
+#           Na sprzecie jest INNA, mniejsza kamera — obrys Kinecta wziety swiadomie
+#           jako BUFOR (decyzja uzytkownika 2026-10-01).
+#   Montaz z TF: base_link -> gen3_base_link = [0.256, 0, 0.112], rotacja JEDNOSTKOWA.
+#
+# DLACZEGO ETAPAMI. Budzet nagrody w pelnej scenie: zadanie +1.0, istniejaca kara za
+# tablice 89.5 kroku x 5.0 / 225 = -1.99, kara za Spota -0.26. Dolozenie TERAZ kary za
+# szarpanie (-0.32) dawaloby start przy -1.57, gdzie najtanszym rozwiazaniem jest
+# ZNIERUCHOMIEC — tryb awarii pieciu poprzednich prob naprawiania zachowania kara (6.20).
+# Krzywa filtru EMA (6.41) pokazuje, ze szarpanie jest NOSNE: wygladzenie do ||da|| 0.34
+# podnosi kolizyjnosc 56x. Najpierw geometria, gladkosc w etapie 2.
+#
+# action_rate_cost ZOSTAJE 0.02. Jedyne nowe zmienne to spot_body, spot_front_cam
+# i spot_collision_cost. UWAGA: scena jest inna niz w 6.1-6.40 — wyniki
+# NIEPOROWNYWALNE z cala poprzednia historia biegow.
+#
+# ep_rew_mean WYSTARTUJE OKOLO ZERA ALBO PONIZEJ. To arytmetyka kar w ciasnej scenie,
+# nie awaria — zapisane z gory, zeby nie zinterpretowac tego opacznie przy checkpoincie.
+#
+# KRYTERIA (zapisane PRZED biegiem):
+#   przejscie do etapu 2:  kolizje < 20 kroku/ep I skutecznosc > 70 % (n=40, pelna scena)
+#   kontakt ze Spotem:     < 20 kroku/ep (ze 446)
+#   przerwac i wrocic z kurikulum: jesli przy +2M kolizyjnosc ROSNIE wzgledem 89.5
+#
+# URUCHOMIENIE:
+#   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e1.yaml \
+#       --resume logs/board_6dof/kinova_ft_lr2/checkpoints/ppo_board_28023552_steps.zip \
+#       --timesteps 6000000
+
+
+
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY poza kara za kontakt ze Spotem (ponizej).
+# Nowe w tym biegu: scena ma bryle korpusu i przednia kamere.
+init_qpos: [-0.4, 1.4806, -2.5, 2.5145, -2.02, 3.1416]
+spot_body: true
+spot_front_cam: true
+# 0.13, NIE 5.0 jak tablica: przy zmierzonych 446 krokach kontaktu na epizod
+# kara wyniesie 446 x 0.13 / 225 = 0.26, czyli ~26 % nagrody zadania. Przy 5.0
+# byloby -9.9 i polityka natychmiast nauczylaby sie stac.
+spot_collision_cost: 5.0   # ZROWNANE z collision_cost tablicy
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
+base_x_offset: -0.34   # Spot 24 cm dalej (docs 6.42)
+
+total_timesteps: 12000000
+horizon: 2000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/spot_e2
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale
+eef_twist_limits: [0.5, 0.8727]
+n_eval_envs: 2

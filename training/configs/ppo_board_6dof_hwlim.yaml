@@ -1,0 +1,128 @@
+# 6DOF: FINE-TUNE POD LIMITY PREDKOSCI STAWOW Z FIRMWARE GEN3 (2026-09-12)
+#
+# Wznowienie z logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip
+# (15.91M). Zmienna niezalezna: WYLACZNIE joint_vel_limits.
+#
+# --- DLACZEGO ---
+#
+# Zrodlo liczb: Kinovarobotics/ros2_kortex PR #241 "Joint limits modifications",
+# ktory wyrownal limity w ROS do firmware'u robota ("the new joint limits reflect
+# the ones in the robot's firmware. This way we avoid the mismatch between the
+# virtual representation and reality"). Dla Gen3: 1.3963 rad/s dla stawow
+# ramienia, 1.2218 rad/s dla nadgarstka.
+#
+# Model 15.91M ZADA WIECEJ, niz robot potrafi (pomiar, 8 epizodow, 6324 kroki):
+#
+#   staw   mediana   p95     max     limit HW   % krokow ponad limitem
+#   j1      0.053   0.380   0.560    1.3963       0.0 %
+#   j2      0.125   0.666   2.072    1.3963       0.1 %
+#   j3      0.292   1.287   3.322    1.3963       3.7 %
+#   j4      0.524   1.819  12.300    1.2218      16.4 %
+#   j5      0.342   1.458   3.635    1.2218       8.6 %
+#   j6      1.165   2.471  10.092    1.2218      46.9 %
+#
+#   -> w 59.2 % krokow co najmniej jeden staw przekracza mozliwosci sprzetu.
+#      Najgorzej w NADGARSTKU, czyli tam, gdzie realizuje sie obrot. Zgadza sie
+#      to z sim2sim: w Webots obrot padal mocniej niz translacja (docs 6.29).
+#
+# Koszt zmierzony wprost (pary n=40, h=1500, docs 6.31):
+#
+#   bez limitow : 27/40 sukcesow, 4.05 wcisniec/ep, 16.2 kroku kolizji/ep
+#   z limitami  :  1/40 sukcesow, 1.18 wcisniec/ep, 75.5 kroku kolizji/ep
+#   p = 2.98e-08, 26 epizodow przegranych wylacznie przez limity, 0 odwrotnie
+#
+# Model 15.91M NIE NADAJE SIE na sprzet w obecnej postaci. Nie jest to kwestia
+# strojenia — 59 % krokow jest fizycznie niewykonalnych.
+#
+# --- DLACZEGO TO NIE JEST KOLEJNA PROBA "NAPRAWY ZACHOWANIA" ---
+#
+# Zasada z 6.20 zabrania naprawiania zachowania rewardem (6 nieudanych prob).
+# Ten bieg NIE dotyka rewardu ani nie dokłada randomizacji. Jest to poprawka
+# WIERNOSCI SYMULATORA: srodowisko zaczyna odwzorowywac ograniczenie, ktore
+# na sprzecie istnieje, a w MuJoCo nie istnialo. Ta sama klasa zmiany co
+# sprowadzenie geometrii z Webotsa (6.24) — i tamta zadziala.
+#
+# Implementacja: MuJoCo nie ma limitu predkosci, wiec ButtonBoardEnv._pre_action
+# naklada saturacje na qvel przed kazdym krokiem fizyki. To model napedu, ktory
+# po prostu nie potrafi szybciej, a nie kara w nagrodzie.
+#
+# --- RYZYKO ---
+#
+# 1. Zadanie jest ISTOTNIE trudniejsze. Start z 1/40 to praktycznie scratch
+#    na wyuczonych cechach. Jesli w ciagu 1.5M sukces nie przekroczy ~20 %,
+#    fine-tune nie wystarcza i trzeba scratchu Z limitami od poczatku.
+# 2. Kolizyjnosc startowa jest KATASTROFALNA (75.5 kroku/ep wobec 16.2).
+#    Polityka obcinana w predkosci przewraca sie na tablice. Obserwowac
+#    kolizyjnosc na rowni ze skutecznoscia — model, ktory osiagnie 60 %
+#    przy 70 krokach kolizji, jest bezuzyteczny na sprzecie.
+# 3. Nie wiadomo, czy zadanie jest w ogole wykonalne w tej obwiedni przy
+#    h=1000. Wolniejszy nadgarstek = dluzsze epizody. Pomiar robic przy
+#    h=1500 i h=2000, nie tylko 1500.
+#
+# KRYTERIUM: sukces > 40/100 przy h=1500 Z limitami, przy kolizyjnosci
+# ponizej 20 krokow/ep. Nizej = zadanie wymaga zmiany strukturalnej
+# (inna poza bazy, inne output_max w OSC), nie dalszego treningu.
+#
+# URUCHOMIENIE:
+#   python training/train_board.py \
+#       --config training/configs/ppo_board_6dof_hwlim.yaml \
+#       --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip \
+#       --timesteps 3000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.0001
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
+force_gripper_closed: true
+finger_press_gate: true
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 5.0
+action_rate_cost: 0.02
+depress_shaping_k: 400.0
+depress_clip_buffer: 0.001
+activation_depth: 0.012
+base_x_offset: -0.1
+
+total_timesteps: 3000000
+horizon: 1000
+random_order: true
+
+board_pos_noise: 0.06
+percep_pos_bias: 0.015
+percep_pos_noise: 0.005
+percep_axis_noise: 0.05
+base_z_noise: 0.03
+
+# JEDYNA zmienna niezalezna. Firmware Gen3 wg ros2_kortex PR #241.
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+
+log_std_max: 0.0
+target_kl: 0.03
+
+checkpoint_freq: 100000
+eval_freq: 100000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/hwlim
+tensorboard_log: logs/tensorboard

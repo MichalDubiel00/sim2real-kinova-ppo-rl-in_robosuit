@@ -1,0 +1,11 @@
+# Profil E-stopu 40 N — gorna granica zakresu z researchu (20-40 N typowy E-stop).
+# Karta katalogowa naszego to 25 N; to test, gdzie model przestaje dawac rade.
+activation_depth: 0.0059
+button_estop_profile:
+  f_start: 20.0
+  f_peak: 40.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true

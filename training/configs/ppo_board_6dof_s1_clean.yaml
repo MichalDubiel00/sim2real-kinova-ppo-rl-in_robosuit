@@ -1,0 +1,68 @@
+# Kurikulum 6DOF, ETAP 1 — CZYSTY SCRATCH (2026-07-31)
+#
+# Poprzedni przebieg (logs/board_6dof/s1_contaminated/) osiagnal po 16M
+# krokow tylko ~6% sukcesu i byl SKAZONY:
+#   - 0..5.2M   trening z fantomowym kontaktem base x shoulder (blad XML,
+#               conaffinity — wykryty dopiero @5.2M), polityka uczyla sie
+#               kompensowac nieistniejaca sile
+#   - @3.9M     doklejony depress_shaping_k
+#   - @7.7M     zmiana progu 12 -> 10 mm
+#   - @12.4M    zmiana horyzontu 1000 -> 2000
+# Kazda zmiana dokladana do juz zdeformowanej polityki = srodowisko
+# niestacjonarne przez caly trening (najgorszy scenariusz dla RL).
+# 7DOF (run v4) mial od kroku 0 stale warunki i pierwsze sukcesy @1.55M.
+#
+# TEN config = wszystkie ustalenia OD KROKU 0, stacjonarnie:
+#   naprawiony XML (conaffinity na wszystkich ogniwach), prog 10 mm,
+#   shaping glebokosci, horyzont 2000, reward v2-like (jak udany scratch
+#   7DOF: lagodna kolizja 0.5, bez kary za szarpanie), bramka palcowa OFF.
+# Hiperparametry PPO identyczne jak ppo_board.yaml (run v4) — swiadomie
+# NIE zmieniamy wielu rzeczy naraz.
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 3.0e-4
+
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+
+clip_range: 0.2
+clip_range_vf: null
+
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF
+
+# Reward v2-like + shaping glebokosci, bramka OFF (etap 1)
+finger_press_gate: false
+finger_misuse_cost: 0.0
+contact_speed_cost: 0.0
+dense_align_coef: 0.05
+collision_cost: 0.5
+action_rate_cost: 0.0
+depress_shaping_k: 400.0
+activation_depth: 0.010
+
+total_timesteps: 12_000_000
+horizon: 2000
+
+random_order: true
+board_pos_noise: 0.05
+percep_pos_bias: 0.005
+percep_pos_noise: 0.002
+percep_axis_noise: 0.02
+
+checkpoint_freq: 100_000
+log_dir: logs/board_6dof/s1_clean
+tensorboard_log: logs/tensorboard
