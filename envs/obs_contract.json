@@ -1,0 +1,398 @@
+{
+  "_description": "Observation-vector contract for ButtonBoardEnv. Ordering comes from obs_dict.values() in RobosuiteGymWrapper._flatten_obs - insertion order, not sorted, and not written down anywhere else in the code. The vector is DUPLICATED: the *-state aggregates repeat the individual keys. Regenerate: python training/diag_obs_map.py --json",
+  "_verification": "ordering identical across 6 seeds, after step(), with random_order=True, and in a separate process",
+  "_warning": "A wrong ordering raises no error as long as the dimension matches - the only symptom is a very low success rate (docs 6.22).",
+  "robots": {
+    "Kinova3_6DOF": {
+      "obs_dim": 120,
+      "action_dim": 7,
+      "keys": [
+        {
+          "key": "robot0_joint_pos",
+          "start": 0,
+          "end": 6,
+          "dim": 6,
+          "meaning": "joint angles",
+          "units": "rad",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "joint_states.position - VERIFY ORDERING"
+        },
+        {
+          "key": "robot0_joint_pos_cos",
+          "start": 6,
+          "end": 12,
+          "dim": 6,
+          "meaning": "cosines of joint angles",
+          "units": "-",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "removes discontinuity at +/-pi"
+        },
+        {
+          "key": "robot0_joint_pos_sin",
+          "start": 12,
+          "end": 18,
+          "dim": 6,
+          "meaning": "sines of joint angles",
+          "units": "-",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": ""
+        },
+        {
+          "key": "robot0_joint_vel",
+          "start": 18,
+          "end": 24,
+          "dim": 6,
+          "meaning": "joint velocities",
+          "units": "rad/s",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "noisier on hardware"
+        },
+        {
+          "key": "robot0_eef_pos",
+          "start": 24,
+          "end": 27,
+          "dim": 3,
+          "meaning": "end-effector position",
+          "units": "m",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "forward kinematics or TF base_link->eef"
+        },
+        {
+          "key": "robot0_eef_quat",
+          "start": 27,
+          "end": 31,
+          "dim": 4,
+          "meaning": "EEF orientation (body frame)",
+          "units": "quat xyzw",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "USED BY eef_align - not quat_site"
+        },
+        {
+          "key": "robot0_eef_quat_site",
+          "start": 31,
+          "end": 35,
+          "dim": 4,
+          "meaning": "EEF orientation (site frame)",
+          "units": "quat xyzw",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "rotated 90deg; same Z axis"
+        },
+        {
+          "key": "robot0_gripper_qpos",
+          "start": 35,
+          "end": 41,
+          "dim": 6,
+          "meaning": "Robotiq85 finger angles",
+          "units": "rad",
+          "frame": "gripper",
+          "aggregate": false,
+          "hardware_note": "near-constant if force_gripper_closed"
+        },
+        {
+          "key": "robot0_gripper_qvel",
+          "start": 41,
+          "end": 47,
+          "dim": 6,
+          "meaning": "Robotiq85 finger velocities",
+          "units": "rad/s",
+          "frame": "gripper",
+          "aggregate": false,
+          "hardware_note": ""
+        },
+        {
+          "key": "target_relative_pos",
+          "start": 47,
+          "end": 50,
+          "dim": 3,
+          "meaning": "EEF->target vector, WITH NOISE",
+          "units": "m",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "PRIMARY PERCEPTION INPUT (ArUco)"
+        },
+        {
+          "key": "target_distance",
+          "start": 50,
+          "end": 51,
+          "dim": 1,
+          "meaning": "norm of target_relative_pos",
+          "units": "m",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "derived"
+        },
+        {
+          "key": "target_onehot",
+          "start": 51,
+          "end": 56,
+          "dim": 5,
+          "meaning": "current target button",
+          "units": "one-hot 5",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "SET BY SUPERVISOR on hardware"
+        },
+        {
+          "key": "target_press_axis",
+          "start": 56,
+          "end": 59,
+          "dim": 3,
+          "meaning": "press direction (-normal), WITH NOISE",
+          "units": "unit vec",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "board pose (ArUco) + geometry"
+        },
+        {
+          "key": "eef_align_with_target",
+          "start": 59,
+          "end": 60,
+          "dim": 1,
+          "meaning": "angle between EEF +Z and press axis",
+          "units": "rad 0..pi/2",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "0 = perpendicular to face"
+        },
+        {
+          "key": "robot0_proprio-state",
+          "start": 60,
+          "end": 107,
+          "dim": 47,
+          "meaning": "AGGREGATE: copy of robot0_* keys",
+          "units": "-",
+          "frame": "-",
+          "aggregate": true,
+          "hardware_note": "DUPLICATE - reproduce on hardware"
+        },
+        {
+          "key": "object-state",
+          "start": 107,
+          "end": 120,
+          "dim": 13,
+          "meaning": "AGGREGATE: copy of target_*/eef_align",
+          "units": "-",
+          "frame": "-",
+          "aggregate": true,
+          "hardware_note": "DUPLICATE - reproduce on hardware"
+        }
+      ]
+    },
+    "Kinova3": {
+      "obs_dim": 128,
+      "action_dim": 7,
+      "keys": [
+        {
+          "key": "robot0_joint_pos",
+          "start": 0,
+          "end": 7,
+          "dim": 7,
+          "meaning": "joint angles",
+          "units": "rad",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "joint_states.position - VERIFY ORDERING"
+        },
+        {
+          "key": "robot0_joint_pos_cos",
+          "start": 7,
+          "end": 14,
+          "dim": 7,
+          "meaning": "cosines of joint angles",
+          "units": "-",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "removes discontinuity at +/-pi"
+        },
+        {
+          "key": "robot0_joint_pos_sin",
+          "start": 14,
+          "end": 21,
+          "dim": 7,
+          "meaning": "sines of joint angles",
+          "units": "-",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": ""
+        },
+        {
+          "key": "robot0_joint_vel",
+          "start": 21,
+          "end": 28,
+          "dim": 7,
+          "meaning": "joint velocities",
+          "units": "rad/s",
+          "frame": "joint",
+          "aggregate": false,
+          "hardware_note": "noisier on hardware"
+        },
+        {
+          "key": "robot0_eef_pos",
+          "start": 28,
+          "end": 31,
+          "dim": 3,
+          "meaning": "end-effector position",
+          "units": "m",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "forward kinematics or TF base_link->eef"
+        },
+        {
+          "key": "robot0_eef_quat",
+          "start": 31,
+          "end": 35,
+          "dim": 4,
+          "meaning": "EEF orientation (body frame)",
+          "units": "quat xyzw",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "USED BY eef_align - not quat_site"
+        },
+        {
+          "key": "robot0_eef_quat_site",
+          "start": 35,
+          "end": 39,
+          "dim": 4,
+          "meaning": "EEF orientation (site frame)",
+          "units": "quat xyzw",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "rotated 90deg; same Z axis"
+        },
+        {
+          "key": "robot0_gripper_qpos",
+          "start": 39,
+          "end": 45,
+          "dim": 6,
+          "meaning": "Robotiq85 finger angles",
+          "units": "rad",
+          "frame": "gripper",
+          "aggregate": false,
+          "hardware_note": "near-constant if force_gripper_closed"
+        },
+        {
+          "key": "robot0_gripper_qvel",
+          "start": 45,
+          "end": 51,
+          "dim": 6,
+          "meaning": "Robotiq85 finger velocities",
+          "units": "rad/s",
+          "frame": "gripper",
+          "aggregate": false,
+          "hardware_note": ""
+        },
+        {
+          "key": "target_relative_pos",
+          "start": 51,
+          "end": 54,
+          "dim": 3,
+          "meaning": "EEF->target vector, WITH NOISE",
+          "units": "m",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "PRIMARY PERCEPTION INPUT (ArUco)"
+        },
+        {
+          "key": "target_distance",
+          "start": 54,
+          "end": 55,
+          "dim": 1,
+          "meaning": "norm of target_relative_pos",
+          "units": "m",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "derived"
+        },
+        {
+          "key": "target_onehot",
+          "start": 55,
+          "end": 60,
+          "dim": 5,
+          "meaning": "current target button",
+          "units": "one-hot 5",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "SET BY SUPERVISOR on hardware"
+        },
+        {
+          "key": "target_press_axis",
+          "start": 60,
+          "end": 63,
+          "dim": 3,
+          "meaning": "press direction (-normal), WITH NOISE",
+          "units": "unit vec",
+          "frame": "world",
+          "aggregate": false,
+          "hardware_note": "board pose (ArUco) + geometry"
+        },
+        {
+          "key": "eef_align_with_target",
+          "start": 63,
+          "end": 64,
+          "dim": 1,
+          "meaning": "angle between EEF +Z and press axis",
+          "units": "rad 0..pi/2",
+          "frame": "-",
+          "aggregate": false,
+          "hardware_note": "0 = perpendicular to face"
+        },
+        {
+          "key": "robot0_proprio-state",
+          "start": 64,
+          "end": 115,
+          "dim": 51,
+          "meaning": "AGGREGATE: copy of robot0_* keys",
+          "units": "-",
+          "frame": "-",
+          "aggregate": true,
+          "hardware_note": "DUPLICATE - reproduce on hardware"
+        },
+        {
+          "key": "object-state",
+          "start": 115,
+          "end": 128,
+          "dim": 13,
+          "meaning": "AGGREGATE: copy of target_*/eef_align",
+          "units": "-",
+          "frame": "-",
+          "aggregate": true,
+          "hardware_note": "DUPLICATE - reproduce on hardware"
+        }
+      ]
+    }
+  },
+  "action": {
+    "dim": 7,
+    "range": "[-1, 1]",
+    "0:3": "position delta, OSC_POSE",
+    "3:6": "orientation delta, OSC_POSE",
+    "6": "gripper - overridden when force_gripper_closed=True",
+    "nominal_output_max": [
+      0.05,
+      0.05,
+      0.05,
+      0.5,
+      0.5,
+      0.5
+    ],
+    "input_ref_frame": "base",
+    "measured_scale_m_per_step": {
+      "X": 0.01126,
+      "Y": 0.00722,
+      "Z": 0.01317
+    },
+    "measured_steps_to_90pct": {
+      "X": 12,
+      "Y": 3,
+      "Z": 2
+    },
+    "measured_note": "linear in amplitude; measured 2026-09-04 by training/diag_action_scale.py at 20 Hz control rate"
+  }
+}
