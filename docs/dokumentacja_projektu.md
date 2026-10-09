@@ -5966,6 +5966,199 @@ skryptu oceny bez śladu w logach. Decyzja o zmianie domyślnej należy do użyt
 uczony przy `clip` pracuje na nasyceniu, więc może odzyskać część kolizyjności, jeśli nauczy się
 w semantyce docelowej.
 
+### 6.51. Kampania chmurowa: cztery ramiona kontrolne. Trening w semantyce firmware'u (2026-10-08/09)
+
+**Po co chmura.** Nie po szybkość — po **biegi kontrolne**. Największa dziura metodologiczna
+kampanii 6.43–6.47: każde „ulepszenie" było jednocześnie kolejnymi milionami kroków, więc
+poprawy nie dawało się przypisać. W 6.46 kolizje spadły 20.9 → 8.6 przy p = 0.047 i przypisałem
+to karze, choć bieg „te same 4M bez kary" nigdy nie powstał. Cztery instancje `e2-standard-8`
+(spot, `europe-west3-a`) pozwoliły puścić ramiona **równolegle** z tego samego checkpointu.
+
+Wszystkie: +4M kroków z `spot_e6ab/.../86123552` do **90 123 552**, `n_envs: 8` jak w całej
+historii biegów. Każde zmienia **jedną** rzecz:
+
+| ramię | zmiana wobec e6ab | pytanie |
+|---|---|---|
+| **K** | żadna (tryb `clip`) | ile daje **samo** 4M kroków |
+| **S** | `joint_acc_limit_mode: scale` | czy trening w semantyce firmware'u odzyska kolizje |
+| SM | `scale` + limity 4.0/8.0 | czy polityka zmieści się **wewnątrz** obwiedni sprzętowej |
+| SB | `scale`, kary `acc_*` = 0 | czy kary liczące tętnienie (6.48) szkodzą |
+
+#### Odniesienie najpierw: e6ab w trybie `scale` przy n=100
+
+Wczoraj mieliśmy e6ab przy `scale` tylko z n=40 (kolizje 11.9). Powtórka przy n=100, pary:
+
+| miara | `clip` | `scale` | pary | p |
+|---|---|---|---|---|
+| sukcesy | 100/100 | 99/100 | 1:0 | — |
+| czas | 15.2 s | 16.1 s | 48:52 | 0.62 |
+| **kolizje** | śr. 7.02, med. 6.0 | **śr. 14.65**, med. 6.5 | 50:42 | **0.035** |
+
+**Liczba na sprzęt to 14.65, nie 11.9 i nie 7.02.** Efekt siedzi w **ogonie**: mediana rusza się
+6.0 → 6.5, średnia dwukrotnie. `scale` nie psuje typowego epizodu, pogłębia rzadkie złe.
+
+#### Wynik K i S (n=100, ziarno 1234, h=2000, tryb docelowy `scale`)
+
+| | sukcesy | czas | kolizje śr. (med.) | misuse |
+|---|---|---|---|---|
+| e6ab (odniesienie) | 99/100 | 16.1 s | 14.65 (6.5) | 0.14 |
+| **K — kontrola** | 98/100 | 13.8 s | **14.91 (8.0)** | 0.23 |
+| **S — `scale`** | 98/100 | **13.1 s** | **6.59 (4.0)** | **0.00** |
+
+Pary, wszystkie na tych samych 100 ziarnach:
+
+| porównanie | kolizje | czas |
+|---|---|---|
+| e6ab → K | 14.65 → 14.91, pary 50:49, **p = 0.55** | 338 → 311 kr., **p = 0.022** |
+| e6ab → S | 14.65 → 6.59, pary 32:63, **p = 0.0006** | 338 → 296 kr., **p = 0.0020** |
+| K → S | 14.91 → 6.59, pary 27:63, **p = 0.0001** | 311 → 296 kr., p = 0.50 |
+
+**Ramię kontrolne rozdzieliło dwa efekty, których bez niego nie dałoby się rozplątać:**
+
+- **Kolizyjność jest zasługą semantyki, nie długości treningu.** Same 4M kroków nie dały nic
+  (p = 0.55, mediana nawet w górę 6.5 → 8.0). Dopiero trening w `scale` zbił kolizje o **55 %**,
+  i to względem kontroli, nie względem punktu wyjścia (p = 0.0001).
+- **Czas jest zasługą długości treningu, nie semantyki.** K → S nieistotne (p = 0.50), a oba
+  ramiona szybsze od e6ab o ok. 2,5–3 s.
+
+To jest dokładnie ta atrybucja, której brakowało w 6.46. Gdybyśmy puścili tylko S, uczciwym
+wnioskiem byłoby „S jest lepsze od e6ab" — bez możliwości powiedzenia, **dlaczego**.
+
+**Konsekwencja praktyczna.** Liczba, której się baliśmy — 14.65 kolizji na sprzęcie — spada do
+**6.59**, i to zmierzone w **wiernym** trybie przycinania, nie w wygodniejszym dla polityki.
+Model trenowany w semantyce docelowej jest w uczciwym protokole bezpieczniejszy niż stary
+model w protokole pochlebnym (6.59 wobec 7.02). Skuteczność bez zmian (98/100 wobec 99/100,
+różnica jednego epizodu), misuse spada do zera.
+
+**`logs/board_6dof/arm_s/checkpoints/ppo_board_90123552_steps.zip` jest nowym kandydatem na
+sprzęt** — z zastrzeżeniem, że SM i SB jeszcze liczą (preempcja na 88.32M, wznowione).
+
+#### Wynik całej czwórki (n=100, ziarno 1234, h=2000, tryb `scale`, obwiednia 5.2/10.0)
+
+SM był uczony przy 4.0/8.0, ale **oceniany przy obwiedni sprzętowej** — inaczej mierzyłoby się
+inną scenę (ta sama pułapka co `base_x_offset` w 6.42).
+
+⚠ Kolumna czasu podaje średnią po **wszystkich** epizodach (`kroki`/20 Hz), bo tylko ona
+jest porównywalna na parach — średnia po samych sukcesach pomija epizody dobite do horyzontu
+i faworyzuje model, który częściej przegrywa. Dla porównania z tabelą wyżej (tam: średnia
+po sukcesach) podaję oba.
+
+| model | sukcesy | czas wszystkie / sukcesy | kolizje śr. (med.) | misuse | każdy przycisk |
+|---|---|---|---|---|---|
+| e6ab (odniesienie) | 99/100 | 16.9 s / 16.1 s | 14.65 (6.5) | 0.14 | — |
+| K — kontrola | 98/100 | 15.5 s / 13.8 s | 14.91 (8.0) | 0.23 | — |
+| S — `scale` | 98/100 | 14.8 s / 13.1 s | **6.59 (4.0)** | 0.00 | — |
+| SM — `scale` + 4.0/8.0 | 97/100 | **21.7 s / 19.2 s** | 15.13 (**3.0**) | 0.18 | 98/99/99/98/100 |
+| **SB — `scale`, kary `acc_*` = 0** | **100/100** | **12.8 s / 12.8 s** | 6.98 (4.0) | **0.00** | **100/100 każdy** |
+
+SB ma oba czasy identyczne, bo nie przegrał żadnego epizodu — nie ma czego pomijać.
+
+Pary na tych samych 100 ziarnach:
+
+| | kolizje | czas |
+|---|---|---|
+| K → S | 14.91 → 6.59, pary 27:63, **p = 0.0001** | p = 0.50 |
+| K → SB | 14.91 → 6.98, pary 28:66, **p < 0.0001** | p = 0.10 |
+| K → SM | 14.91 → 15.13, **mediana 8.0 → 3.0**, pary 29:64, **p = 0.0001** | 311 → 433 kr., **p = 0.0001** |
+| S → SB | 6.59 → 6.98, pary 46:43, **p = 0.98** | p = 0.71 |
+| S → SM | — , p = 0.67 | 296 → 433 kr., **p < 0.0001** |
+
+**Trzy wnioski, każdy z własnym kryterium zapisanym przed biegami.**
+
+**1. `scale` w treningu działa i jest jedynym źródłem poprawy kolizyjności.** Wszystkie trzy
+ramiona uczone w semantyce firmware'u biją kontrolę na medianie kolizji (p ≤ 0.0001), a sama
+kontrola nie dała nic wobec e6ab (p = 0.55). Poprawka wierności okazała się jednocześnie
+największą poprawą bezpieczeństwa w całej kampanii 6.43–6.51.
+
+**2. Margines w treningu (SM) — WYNIK NEGATYWNY.** Hipoteza z 6.48 brzmiała: naucz politykę
+mieścić się w 4.0/8.0, to na sprzęcie przycinanie firmware'u nigdy się nie włączy. Polityka
+faktycznie nauczyła się ciaśniejszego ruchu — **ma najlepszą medianę kolizji w całej stawce
+(3.0)** — ale zapłaciła za to czasem: **21.7 s wobec 12.8 s u SB** (p < 0.0001) i skutecznością
+97/100. Co gorsza jej **średnia** kolizji jest najwyższa (15.13 przy medianie 3.0), czyli ma
+rzadkie epizody katastrofalne. To trzeci raz w tym projekcie, gdy mediana i średnia mówią
+co innego i gdy decyzja po samej średniej byłaby błędna (6.45, 6.47, teraz 6.51): SM wygląda
+najlepiej na medianie i najgorzej na średniej, a prawda jest, że jest po prostu **wolny i
+nierówny**. Zgodność przez konstrukcję nie jest darmowa — wbrew temu, co zapisałem w 6.47.
+
+**3. Kary `acc_demand_cost` i `acc_margin_bonus` do WYCOFANIA.** SB to S bez tych dwóch kar
+i jest **najlepszym ramieniem kampanii**: jedyne 100/100, najszybsze, każdy przycisk 100/100,
+zero misuse, zero zacięć, kolizje nieodróżnialne od S (p = 0.98). Potwierdza to pomiarowo
+diagnozę z 6.48: te kary liczyły **tętnienie kontrolera**, nie zachowanie polityki, więc ich
+usunięcie nic nie kosztuje — a przy okazji zdejmuje z nagrody człon, który był szumem.
+**Wylatują z przyszłych configów** (w env zostają, domyślnie 0.0).
+
+#### Model na sprzęt: `arm_sb`
+
+**`logs/board_6dof/arm_sb/checkpoints/ppo_board_90123552_steps.zip`** — n=100, tryb `scale`:
+**100/100, 12.8 s, kolizje 6.98 (mediana 4), misuse 0.00, każdy przycisk 100/100, 0 zacięć.**
+
+Wybór wobec S nie opiera się na istotności — kolizje i czas są nieodróżnialne (p = 0.98 i 0.71).
+Opiera się na tym samym kryterium, co wybór e6ab nad e6a w 6.50: **przy równości bierzemy model
+bez trybu porażki.** SB jest jedynym w całej historii projektu, który przy n=100 nie przegrał
+ani jednego epizodu, w **wiernym** trybie przycinania.
+
+Droga od punktu wyjścia: e6ab mierzony uczciwie to 99/100, 16.9 s, kolizje 14.65. SB to
+**100/100, 12.8 s, kolizje 6.98** — szybciej o 4 s i dwukrotnie bezpieczniej, przy 8M krokach
+w chmurze i jednej zmianie semantyki plus usunięciu dwóch kar, które nic nie mierzyły.
+
+#### Rachunek i jedna luka operacyjna
+
+Cztery ramiona × 4M kroków przy 153–180 kroków/s = ok. **26 godzin-instancji**, plus ok. 1,5 h
+zmarnowane na pięć nieudanych startów i **1,1 h na bezczynne maszyny po ukończeniu**.
+Ta ostatnia strata ma przyczynę wartą zapisania: gaszenie instancji po sukcesie powierzyłem
+najpierw `Restart=always` (który podnosił runner w pętli), a potem procesowi dozorcy
+**w sesji Claude Code** — ten zginął razem z sesją. Poprawka w `run_arm.sh` gasi maszynę po
+osiągnięciu celu, ale dotarła do SM i SB dopiero przez GCS, czyli nie zadziałała dla biegu,
+który już trwał. **Reguła: mechanizm wyłączania musi żyć na maszynie, nigdy w sesji, która
+go nadzoruje.**
+
+#### Infrastruktura: pięć prób startu, wszystkie z tej samej przyczyny
+
+Kampania wstała dopiero przy piątej próbie. Każda awaria była cicha i każda wynikała z tego,
+że środowisko chmurowe składałem **z pamięci**, a nie z działającego lokalnego:
+
+1. **IAM, nie zakres.** `--scopes=devstorage.read_write` był ustawiony, ale domyślne konto usługi
+   compute nie miało roli na buckecie. Oba warunki są konieczne. Złapał to test zapisu dodany
+   przed startem — bez niego cztery ramiona liczyłyby 6 h i nie zapisały nic.
+2. **`CondaToSNonInteractiveError`** — conda wymaga dziś jawnej akceptacji Terms of Service dla
+   `repo.anaconda.com/pkgs/{main,r}`. Lek: `-c conda-forge --override-channels`.
+3. **`evdev` tylko jako sdist.** robosuite → pynput → evdev kompiluje się u klienta i wymaga
+   `gcc` oraz `linux/input.h`. Brakowało `build-essential`.
+4. **`libGL.so.1`** — ciągnie go `opencv-python` (zależność robosuite), mimo że nic nie renderujemy.
+   Brakowało `libgl1` i `libglib2.0-0`.
+5. **`ModuleNotFoundError: objects`** — paczkę składałem z ręcznej listy katalogów, w której
+   brakowało `objects/` (importowanego przez `button_board.py`).
+
+**Dwa wnioski narzędziowe, oba zapisane w skryptach:**
+
+- **Diagnostyki nie wolno wyciszać na krokach, które najłatwiej padają.** `conda create >/dev/null`
+   ukryło błąd (2) i kazało szukać winy gdzie indziej. Po zdjęciu wyciszenia kolejne trzy
+   przyczyny wyszły w kilka minut każda.
+- **Zawartość paczki wyprowadzać z `git ls-files`, nie z listy pisanej z głowy.** Przy okazji
+   wyszła mina: `my_assets/objects/xml/meshes` był symlinkiem na **ścieżkę absolutną**
+   `/home/kwadracik/Batchelor/robosuite/...`, działającą lokalnie tylko przez drugi symlink
+   katalogu. Na czystej maszynie `omniboard.xml` nie znalazłby meshy. Naprawione na względny
+   (`../meshes`) — to był utajony błąd przenośności **całego repozytorium**, nie tylko kampanii.
+   `cloud/bundle.sh` wykrywa teraz symlinki absolutne i odmawia pakowania.
+
+**Strażniki w `startup.sh`** są warunkowane na **stan docelowy**, nie na obecność pliku: `apt`
+per pakiet, instalacja pipa na **działający import**, nie na istnienie `python`. Pierwsza wersja
+keyowała na „czy jest python" i przy powtórnym starcie pominęłaby instalację, zostawiając ramię
+bez robosuite.
+
+#### Przepustowość i preempcja
+
+**164–180 kroków/s** na `e2-standard-8` wobec ~250 na laptopie, czyli 4M kroków to **6,5 h na
+ramię**, nie 4,5 h — pierwotny szacunek w `cloud/README.md` był o 45 % za niski, bo przepisałem
+tempo z laptopa. SM i SB zostały ubite przez preempcję na **dokładnie tym samym kroku**
+(88 323 552), co wygląda na odebranie zasobów w całej strefie naraz.
+
+Ścieżka wznawiania zadziałała bez ingerencji: po ponownym starcie `run_arm.sh` odczytał najwyższy
+checkpoint z GCS i policzył `zostalo 1800000 krokow do 90123552`. Luka, którą ukończenie K i S
+odkryło: ramię po osiągnięciu celu **kręciło się w pętli restartów** (`Restart=always` podnosi
+runner, ten widzi marker `KONIEC` i wychodzi z kodem 0) i instancja stała, pisząc rachunek.
+Poprawione — po sukcesie runner gasi maszynę; zwykła awaria nadal ma być powtarzana.
+
 ## 7. Napotkane problemy techniczne i rozwiązania
 
 Ta sekcja dokumentuje problemy implementacyjne — materiał do rozdziału o implementacji.
