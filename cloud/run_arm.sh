@@ -20,13 +20,26 @@ LOG="$REPO/logs/board_6dof/arm_$ARM"
 CFG="$REPO/training/configs/arm_$ARM.yaml"
 GS="gs://$BUCKET/arms/arm_$ARM"
 
+# Po osiagnieciu celu GASIMY MASZYNE. Bez tego `Restart=always` podnosi runner co
+# minute, ten widzi marker KONIEC, wychodzi z kodem 0 — i instancja stoi, palac kredyty.
+# Tak zachowalo sie arm_s po ukonczeniu 09.10 (zauwazone dopiero przy przegladzie).
+# Gasimy TYLKO po sukcesie; zwykla awaria ma byc powtarzana przez systemd.
+zakoncz_i_zgas() {
+  echo "[$ARM] cel osiagniety — gaszenie instancji"
+  echo "${1:-$TARGET}" | gsutil cp - "$GS/KONIEC" 2>/dev/null
+  shutdown -h +1 "ramie $ARM ukonczone" 2>/dev/null || poweroff 2>/dev/null
+  exit 0
+}
+
 cd "$REPO"
 mkdir -p "$LOG/checkpoints" "$REPO/logs/tensorboard" "$REPO/logs/stdout" /opt/kinova/start
 
 # 1. Odtworzenie stanu z GCS (po preempcji dysk moze byc nowy)
 gsutil -q -m rsync -r "$GS/checkpoints" "$LOG/checkpoints" 2>/dev/null || true
 if gsutil -q stat "$GS/KONIEC" 2>/dev/null; then
-  echo "[$ARM] ramie oznaczone jako ZAKONCZONE — nic do roboty"; exit 0
+  echo "[$ARM] ramie oznaczone jako ZAKONCZONE"
+  shutdown -h +1 "ramie $ARM juz ukonczone" 2>/dev/null || poweroff 2>/dev/null
+  exit 0
 fi
 
 # 2. Najwyzszy checkpoint = aktualny krok
@@ -45,7 +58,7 @@ fi
 REMAIN=$(( TARGET - CUR ))
 if [ "$REMAIN" -le 0 ]; then
   echo "[$ARM] cel $TARGET osiagniety (krok $CUR)"
-  echo "$CUR" | gsutil cp - "$GS/KONIEC"; exit 0
+  zakoncz_i_zgas "$CUR"
 fi
 echo "[$ARM] zostalo $REMAIN krokow do $TARGET"
 
@@ -68,5 +81,5 @@ sync_all
 echo "[$ARM] train_board zakonczony kodem $RC"
 # Kod 0 = doszlo do celu. Inny kod (np. preempcja/SIGTERM) = systemd wznowi,
 # a skrypt policzy reszte od nowa z checkpointu.
-if [ $RC -eq 0 ]; then echo "$TARGET" | gsutil cp - "$GS/KONIEC"; fi
+if [ $RC -eq 0 ]; then zakoncz_i_zgas; fi
 exit $RC

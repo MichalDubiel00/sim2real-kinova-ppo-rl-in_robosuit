@@ -26,7 +26,7 @@ Cel absolutny: **90 123 552** kroków.
 
 ```bash
 # 0. raz: bucket
-gsutil mb -l europe-central2 gs://NAZWA-BUCKETA
+gsutil mb -l europe-west3 gs://NAZWA-BUCKETA
 
 # 1. raz: kod (~14 MB) + checkpoint startowy (2.3 MB) do GCS
 cloud/bundle.sh NAZWA-BUCKETA
@@ -34,7 +34,7 @@ cloud/bundle.sh NAZWA-BUCKETA
 # 2. cztery instancje spot, po jednej na ramię
 for ARM in k s sm sb; do
   gcloud compute instances create kinova-arm-$ARM \
-    --zone=europe-central2-a \
+    --zone=europe-west3-a \
     --machine-type=e2-standard-8 \
     --provisioning-model=SPOT \
     --instance-termination-action=STOP \
@@ -114,9 +114,9 @@ Przy `clip` było 5.2 — **nie mieszać tych dwóch liczb.**
 
 ## Koszt
 
-Rachunek jest w godzinach-ramienia: 4 ramiona × 4M kroków. Lokalnie 4M idzie ok. 4,5 h
-przy ~250 kroków/s, więc **ok. 18 godzin-ramienia** na całą czwórkę, ale **przepustowości
-w chmurze nie znamy** — pierwszą rzeczą po starcie jest odczytanie `time/fps` z TensorBoarda
-i przeliczenie. Aktualnych cen `e2-standard-8` spot nie podaję z pamięci: trzeba je odczytać
+Rachunek jest w godzinach-ramienia: 4 ramiona × 4M kroków. **Zmierzone 08.10 na
+`e2-standard-8`: 164–180 kroków/s**, czyli ok. **6,5 h na ramię** i **~26 godzin-ramienia**
+na czwórkę. Laptop robi ~250 kroków/s, więc pierwotny szacunek 18 h był o 45 % za niski —
+vCPU w chmurze są słabsze od rdzeni laptopa. Ramiona liczą równolegle, więc zegarowo to ~6,5 h. Aktualnych cen `e2-standard-8` spot nie podaję z pamięci: trzeba je odczytać
 w konsoli dla wybranego regionu. Instancje nie mają GPU świadomie — przy MLP 256×256
 akcelerator nic nie wnosi, a wąskim gardłem jest stepowanie MuJoCo.
