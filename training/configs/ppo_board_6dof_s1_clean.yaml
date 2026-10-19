@@ -1,23 +1,7 @@
-# Kurikulum 6DOF, ETAP 1 — CZYSTY SCRATCH (2026-07-31)
-#
-# Poprzedni przebieg (logs/board_6dof/s1_contaminated/) osiagnal po 16M
-# krokow tylko ~6% sukcesu i byl SKAZONY:
-#   - 0..5.2M   trening z fantomowym kontaktem base x shoulder (blad XML,
-#               conaffinity — wykryty dopiero @5.2M), polityka uczyla sie
-#               kompensowac nieistniejaca sile
-#   - @3.9M     doklejony depress_shaping_k
-#   - @7.7M     zmiana progu 12 -> 10 mm
-#   - @12.4M    zmiana horyzontu 1000 -> 2000
-# Kazda zmiana dokladana do juz zdeformowanej polityki = srodowisko
-# niestacjonarne przez caly trening (najgorszy scenariusz dla RL).
-# 7DOF (run v4) mial od kroku 0 stale warunki i pierwsze sukcesy @1.55M.
-#
-# TEN config = wszystkie ustalenia OD KROKU 0, stacjonarnie:
-#   naprawiony XML (conaffinity na wszystkich ogniwach), prog 10 mm,
-#   shaping glebokosci, horyzont 2000, reward v2-like (jak udany scratch
-#   7DOF: lagodna kolizja 0.5, bez kary za szarpanie), bramka palcowa OFF.
-# Hiperparametry PPO identyczne jak ppo_board.yaml (run v4) — swiadomie
-# NIE zmieniamy wielu rzeczy naraz.
+# 6DOF curriculum stage 1, clean scratch (docs 6.13-6.14).
+# All fixes from step 0, stationary: fixed XML, 10 mm threshold, depth shaping, h=2000, reward
+# v2-like, no finger gate. Result: 3/100; invalidated by the geometry audit (docs 6.15).
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -42,26 +26,25 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2-like + shaping glebokosci, bramka OFF (etap 1)
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-depress_shaping_k: 400.0
-activation_depth: 0.010
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+activation_depth: 0.010         # cap travel counted as a press [m]
 
-total_timesteps: 12_000_000
-horizon: 2000
+total_timesteps: 12_000_000     # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board_6dof/s1_clean

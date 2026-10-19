@@ -1,0 +1,91 @@
+# Arm D: loop dead time in training (docs 6.55). HARDWARE MODEL.
+# Start: arm_sb 90.12M, +8M. Only change vs arm_sb: action_delay_steps [0, 2], drawn once per
+# episode. Range from measurement: Webots median 24 ms (0-80 ms), Kinova 25 ms quantisation of
+# commands and feedback (docs 6.53-6.54). No action history in obs (would change obs size).
+# Criterion: keep success at d=2 with no loss at d=0 (n=100, scale mode).
+# Result: 98/99/98 % at d=0/1/2, fewer collisions than arm_sb at every delay; 2 episodes lost at d=0.
+#   python training/train_board.py --config training/configs/arm_d.yaml \
+#     --resume logs/board_6dof/arm_sb/checkpoints/ppo_board_90123552_steps.zip --timesteps 8000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
+
+init_qpos: [0.0, 1.4692, -2.2410, 3.1403, -2.0200, 3.1416] # start pose [rad] (docs 6.42)
+spot_body: true                 # Spot body as an obstacle (docs 6.42)
+spot_front_cam: true            # front camera bar as an obstacle
+spot_collision_cost: 5.0        # per-step Spot-body contact penalty
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.3           # penalty on ||a_t - a_{t-1}||^2
+approach_speed_cost: 0.0        # approach-speed penalty, 0 = off (docs 6.45)
+approach_brake_time: 0.30       # allowed approach speed = distance / this [s]
+action_rate_anneal_steps: 2000000 # action-rate curriculum length [steps]
+action_rate_anneal_origin: 50223552 # fixed curriculum origin step, needed for --resume
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.34            # Spot stand-off: arm base shift toward the wall [m]
+
+total_timesteps: 8000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
+
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
+
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22] # joint velocity limits [rad/s], enforced after each substep
+joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0] # joint acceleration limits [rad/s^2] (Gen3 R07 table 48)
+joint_acc_limit_mode: scale     # scale = firmware semantics; clip = per joint (docs 6.50)
+action_delay_steps: [0, 2]      # loop dead time [control steps]; [lo, hi] = drawn per episode
+acc_demand_cost: 0.0            # penalty on demand above the limit (measured substep ripple, docs 6.48)
+acc_margin_bonus: 0.0           # bonus for margin below the limit (same caveat)
+joint_acc_limits_noise: [0.6, 1.4] # per-episode multiplier of the acceleration limits
+
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/arm_d
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale     # scale = proportional, direction kept (twist mode); clip = per joint
+eef_twist_limits: [0.5, 0.8727] # tool caps [m/s, rad/s] (Cartesian joystick mode)
+n_eval_envs: 2                  # parallel evaluation envs

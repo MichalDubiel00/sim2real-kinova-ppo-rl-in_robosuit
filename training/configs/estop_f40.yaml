@@ -1,7 +1,7 @@
-# Profil E-stopu 40 N — gorna granica zakresu z researchu (20-40 N typowy E-stop).
-# Karta katalogowa naszego to 25 N; to test, gdzie model przestaje dawac rade.
-activation_depth: 0.0059
-button_estop_profile:
+# E-stop profile, 40 N peak: top of the typical 20-40 N range; where the model stops coping.
+
+activation_depth: 0.0059        # cap travel counted as a press [m]
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 20.0
   f_peak: 40.0
   x_peak: 0.004

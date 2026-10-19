@@ -1,25 +1,8 @@
-# 6DOF, ETAP 1 na POPRAWIONEJ GEOMETRII — replikacja warunkow v4 (2026-08-02)
-#
-# Poprzednie przebiegi 6DOF (s1_contaminated, s1_clean) utknely na 3-6 %
-# sukcesu. Audyt wzgledem commitow z pierwszymi sukcesami 5/5 (9f8b4dd)
-# wykazal, ze reward i hiperparametry byly OK, ale zadanie NIE bylo tym
-# samym zadaniem co u dzialajacego 7DOF — patrz docs 6.15. Cztery usterki:
-#
-#   1. baza ramienia na 1.562 m zamiast 0.65 m (KINOVA_BASE_Z bylo
-#      przesunieciem doliczanym do cokolu 0.912 m, nie wysokoscia),
-#   2. force_gripper_closed=True od kroku 0, NIEwylaczalne z YAML
-#      (weszlo w 7332a99, JUZ PO udanym scratchu v4),
-#   3. tablica na 1.20 m zamiast 60 cm z regulaminu Rescue League,
-#   4. brak obrotu tablicy o 45 st. (przyciski w pionie/poziomie zamiast
-#      na przekatnych, jak montuje sie omniboard w zawodach).
-#
-# Ten config odtwarza warunki, w ktorych 7DOF nauczyl sie zadania od zera
-# (pierwsze 5/5 @1.55M), tyle ze na robocie 6DOF i poprawnej geometrii:
-# chwytak WOLNY, bramka palcowa OFF, prog 12 mm (nominalny — obnizka do
-# 10 mm byla obejsciem zlej geometrii), horyzont 1000, lagodna kolizja 0.5,
-# bez kary za szarpanie i bez shapingu glebokosci (v4 ich nie mial).
-#
-# Hiperparametry PPO identyczne jak ppo_board.yaml (run v4).
+# 6DOF stage 1 on the corrected geometry, replicating the 7DOF v4 conditions (docs 6.15-6.16):
+# free gripper, no finger gate, 12 mm threshold, h=1000, collision 0.5, no action-rate penalty,
+# no depth shaping. PPO hyperparameters as ppo_board.yaml.
+# Result: 0/50 at 6M; depth stuck at 7.6 mm (step-function threshold).
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -44,32 +27,28 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Warunki v4 (scratch, ktory zadzialal):
-force_gripper_closed: false   # KLUCZOWE — v4 sterowal chwytakiem swobodnie
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-depress_shaping_k: 0.0
-activation_depth: 0.012
+force_gripper_closed: false     # gripper action overridden to closed
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 0.0          # potential shaping on cap depression
+activation_depth: 0.012         # cap travel counted as a press [m]
 
-# Geometria (domyslne w env po naprawie, podane jawnie dla jasnosci):
-base_x_offset: -0.10          # poza startowa wolna od kontaktu z tablica
+base_x_offset: -0.10            # Spot stand-off: arm base shift toward the wall [m]
 
-# 6M: v4 na 7DOF mial pierwsze 5/5 @1.55M i 50-70 % @2.8-3M; 6M daje zapas
-# na potwierdzenie diagnozy takze przy 6DOF (wolniejszym kinematycznie).
-total_timesteps: 6_000_000
-horizon: 1000
+total_timesteps: 6_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board_6dof/v4like

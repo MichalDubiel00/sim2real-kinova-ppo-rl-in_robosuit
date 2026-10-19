@@ -1,50 +1,9 @@
-# 6DOF ETAP 1: GEOMETRIA SPOTA (2026-10-02, docs 6.41)
-#
-# POWOD. Model na sprzet (28.02M, 92/100 w docs 6.40) byl uczony w scenie, w ktorej
-# pod ramieniem i przed nim jest PUSTKA. Na sprzecie i w Webots stoi tam korpus Spota
-# i kamera. Zmierzone na 40 ziarnach, obwiednia sprzetowa, te same ziarna:
-#     bez Spota            35/40 (88 %)  kolizje  2.0 kroku/ep  24.8 s
-#     + korpus             21/40 (52 %)  kolizje 37.0           26.6 s  kontakt 293 kroku/ep
-#     + korpus + kamera    20/40 (50 %)  kolizje 89.5           44.8 s  kontakt 446 kroku/ep
-# Kontakt z korpusem w 40/40 epizodow — ramie sie na nim OPIERA, nie traca go.
-#
-# GEOMETRIA (zmierzona, nie przyjeta):
-#   korpus: suma AABB 16 pudelek `boundingObject BODY_BO` z protos/Spot.proto
-#           Z UWZGLEDNIENIEM obrotow szesciu z nich. W ramce podstawy ramienia
-#           X -0.729..+0.266, Y +-0.139, Z -0.202..+0.002.
-#   kamera: Kinect z Webotsa, wariant `foot FALSE` => geometria kolizyjna to
-#           LISTWA SENSORA Box 0.28 x 0.038 x 0.064 (nie klocek 0.084 ze stojaka).
-#           W ramce ramienia X +0.209..+0.273, Y +-0.140, Z -0.026..+0.012.
-#           Na sprzecie jest INNA, mniejsza kamera — obrys Kinecta wziety swiadomie
-#           jako BUFOR (decyzja uzytkownika 2026-10-01).
-#   Montaz z TF: base_link -> gen3_base_link = [0.256, 0, 0.112], rotacja JEDNOSTKOWA.
-#
-# DLACZEGO ETAPAMI. Budzet nagrody w pelnej scenie: zadanie +1.0, istniejaca kara za
-# tablice 89.5 kroku x 5.0 / 225 = -1.99, kara za Spota -0.26. Dolozenie TERAZ kary za
-# szarpanie (-0.32) dawaloby start przy -1.57, gdzie najtanszym rozwiazaniem jest
-# ZNIERUCHOMIEC — tryb awarii pieciu poprzednich prob naprawiania zachowania kara (6.20).
-# Krzywa filtru EMA (6.41) pokazuje, ze szarpanie jest NOSNE: wygladzenie do ||da|| 0.34
-# podnosi kolizyjnosc 56x. Najpierw geometria, gladkosc w etapie 2.
-#
-# action_rate_cost ZOSTAJE 0.02. Jedyne nowe zmienne to spot_body, spot_front_cam
-# i spot_collision_cost. UWAGA: scena jest inna niz w 6.1-6.40 — wyniki
-# NIEPOROWNYWALNE z cala poprzednia historia biegow.
-#
-# ep_rew_mean WYSTARTUJE OKOLO ZERA ALBO PONIZEJ. To arytmetyka kar w ciasnej scenie,
-# nie awaria — zapisane z gory, zeby nie zinterpretowac tego opacznie przy checkpoincie.
-#
-# KRYTERIA (zapisane PRZED biegiem):
-#   przejscie do etapu 2:  kolizje < 20 kroku/ep I skutecznosc > 70 % (n=40, pelna scena)
-#   kontakt ze Spotem:     < 20 kroku/ep (ze 446)
-#   przerwac i wrocic z kurikulum: jesli przy +2M kolizyjnosc ROSNIE wzgledem 89.5
-#
-# URUCHOMIENIE:
+# 6DOF stage e1: Spot body and front camera in the scene (docs 6.42).
+# Start: 28.02M (92/100 without Spot; 20/40 with body + camera, 446 contact steps/ep).
+# New: spot_body, spot_front_cam, spot_collision_cost 0.13 (measured contact x 0.13 / 225 ~ 26 %).
+# Result: contact moved from the board to Spot (cost asymmetry 38x); stopped at 33.00M.
 #   python training/train_board.py --config training/configs/ppo_board_6dof_spot_e1.yaml \
-#       --resume logs/board_6dof/kinova_ft_lr2/checkpoints/ppo_board_28023552_steps.zip \
-#       --timesteps 6000000
-
-
-
+#     --resume logs/board_6dof/kinova_ft_lr2/checkpoints/ppo_board_28023552_steps.zip --timesteps 6000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -67,43 +26,37 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — NIETKNIETY poza kara za kontakt ze Spotem (ponizej).
-# Nowe w tym biegu: scena ma bryle korpusu i przednia kamere.
-spot_body: true
-spot_front_cam: true
-# 0.13, NIE 5.0 jak tablica: przy zmierzonych 446 krokach kontaktu na epizod
-# kara wyniesie 446 x 0.13 / 225 = 0.26, czyli ~26 % nagrody zadania. Przy 5.0
-# byloby -9.9 i polityka natychmiast nauczylaby sie stac.
-spot_collision_cost: 0.13
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
-base_x_offset: -0.1
+spot_body: true                 # Spot body as an obstacle (docs 6.42)
+spot_front_cam: true            # front camera bar as an obstacle
+spot_collision_cost: 0.13       # per-step Spot-body contact penalty
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 6000000
-horizon: 2000
-random_order: true
+total_timesteps: 6000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
-joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22] # joint velocity limits [rad/s], enforced after each substep
 
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 200000
@@ -111,7 +64,7 @@ n_eval_episodes: 20
 log_dir: logs/board_6dof/spot_e1
 tensorboard_log: logs/tensorboard
 
-button_estop_profile:
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 10.0
   f_peak: 20.0
   x_peak: 0.004
@@ -120,6 +73,6 @@ button_estop_profile:
   x_stroke: 0.006
   latch: true
 
-joint_vel_limit_mode: scale
-eef_twist_limits: [0.5, 0.8727]
-n_eval_envs: 2
+joint_vel_limit_mode: scale     # scale = proportional, direction kept (twist mode); clip = per joint
+eef_twist_limits: [0.5, 0.8727] # tool caps [m/s, rad/s] (Cartesian joystick mode)
+n_eval_envs: 2                  # parallel evaluation envs

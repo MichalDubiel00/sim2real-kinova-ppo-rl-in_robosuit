@@ -1,52 +1,9 @@
-# 6DOF: FINE-TUNE Z depress_ft Z KURIKULUM PO LIMICIE PREDKOSCI (2026-09-13)
-#
-# Wznowienie z logs/board_6dof/depress_ft/ppo_board_final.zip (14.23M).
-# Zmienna niezalezna: limit predkosci stawow zacieśniany 2.0 -> 0.8727 rad/s.
-#
-# --- DLACZEGO TEN BIEG ---
-#
-# Diagnoza (docs 6.31):
-#   - scratch z limitem 0.8727 od zera (hwlim_s1, 8M): 0/40, ZERO wcisniec.
-#     Polityka dojezdza do przycisku (0.189 -> 0.024 m), ale nie dociska.
-#     Shaping glebokosci odpala sie dopiero po kontakcie z grzybkiem, a przy
-#     przytlumionej eksploracji kontakt nigdy nie zachodzil -> problem ODKRYCIA.
-#   - depress_ft (trenowany BEZ limitow) pod limitem 0.8727: docisk DZIALA
-#     (12/12 dotyka, 8/12 > 12 mm), ale ~0.75 wcisniecia/5 i 0/20 przy dowolnym
-#     horyzoncie 1000-4000. Psuje sie PRZEJSCIE miedzy przyciskami — obrot
-#     nadgarstka to jedyna os realnie dlawiona (0.60x / 0.69x).
-#
-# depress_ft JUZ UMIE dociskac. Kurikulum pozwala mu zachowac docisk przy luznym
-# limicie i uczyc sie wykonywac go coraz wolniejszym nadgarstkiem. Ten sam schemat
-# co depress -> s2, tylko zmienna jest limit, nie kary. Zadanie i kryterium
-# docisku BEZ ZMIAN — robot ma sie wyrownac z osia wciskania i docisnac.
-#
-# --- ROZNICE WOBEC depress_ft (kazda uzasadniona) ---
-#
-#   1. joint_vel_limits_start 2.0 -> joint_vel_limits 0.8727, liniowo przez 2.5M
-#      (JointVelLimitCurriculum w train_board.py). EVALUACJA od poczatku przy 0.8727.
-#   2. log_std_max 0.0: depress_ft ma sigma 8.7-26.6 (eksplozja, docs 6.25).
-#      Precedens: ft_sc1_v23_long startowal z sigma 13.7 z clampem od kroku 0
-#      i dal 53 -> 76/100.
-#   3. horizon 2000 zamiast 1000: pod limitami sekwencja trwa dluzej, a przy h=1000
-#      epizod ucina sie przed bonusem za komplet (regula z 6.30 — skalowac horyzont).
-#   4. szum i geometria = OBECNE wartosci domyslne env (depress_ft powstal na starych
-#      z 2026-08-04, przed zmiana geometrii 2026-09-01).
-#   5. learning_rate 1e-4 jak wszystkie udane fine-tune'y od 6.25 (depress_ft mial 3e-4).
-#
-# Reward = etap 1 kurikulum (chwytak swobodny, bez bramki, collision 0.5,
-# action_rate 0). Zaciskanie pod v2.3 to OSOBNY, pozniejszy etap.
-#
-# --- KRYTERIUM (h=2000, limit 0.8727, protokol etapu 1) ---
-#
-#   sukces > 40/100, a wcisniec/ep wyraznie ponad 0.75 z bazowego depress_ft.
-#   Porownanie PAROWANE z depress_ft w tej samej konfiguracji.
-#   Kolizyjnosci NIE oceniac na tym etapie (collision_cost celowo 0.5).
-#
-# URUCHOMIENIE:
-#   python training/train_board.py \
-#       --config training/configs/ppo_board_6dof_hwlim_curr.yaml \
-#       --resume logs/board_6dof/depress_ft/ppo_board_final.zip \
-#       --timesteps 4000000
+# 6DOF velocity-limit curriculum from depress_ft (docs 6.32).
+# Start: depress_ft 14.23M. Limit 2.0 -> 0.8727 rad/s over 2.5M; evaluation at 0.8727 from the
+# start. Also log_std_max 0, h=2000, current noise/geometry, lr 1e-4. Stage-1 reward.
+# Result: no adaptation at 1.86 rad/s (p = 1): the start limit was past the success cliff (3.0-2.0).
+#   python training/train_board.py --config training/configs/ppo_board_6dof_hwlim_curr.yaml \
+#     --resume logs/board_6dof/depress_ft/ppo_board_final.zip --timesteps 4000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -69,38 +26,36 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward ETAPU 1 — jak depress_ft
-force_gripper_closed: false
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.012
-base_x_offset: -0.1
+force_gripper_closed: false     # gripper action overridden to closed
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.012         # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 4000000
-horizon: 2000
-random_order: true
+total_timesteps: 4000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# KURIKULUM LIMITU — jedyna nowa zmienna
-joint_vel_limits_start: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
-joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
-joint_vel_anneal_steps: 2500000
+joint_vel_limits_start: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0] # velocity-limit curriculum start [rad/s]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727] # joint velocity limits [rad/s], enforced after each substep
+joint_vel_anneal_steps: 2500000 # velocity-limit curriculum length [steps]
 
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 100000

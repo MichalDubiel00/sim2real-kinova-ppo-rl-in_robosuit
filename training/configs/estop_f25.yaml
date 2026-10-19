@@ -1,8 +1,8 @@
-# Profil E-stopu z sila szczytowa 25 N — test marginesu wobec karty katalogowej
-# (karta: skok 5 mm, sila 25 N, zatrzask przy pelnym skoku). Trening szedl na 20 N,
-# wiec modelowalismy przycisk LATWIEJSZY niz prawdziwy.
-activation_depth: 0.0059
-button_estop_profile:
+# E-stop profile, 25 N peak: margin test vs the datasheet (5 mm stroke, 25 N, latching).
+# Training used 20 N.
+
+activation_depth: 0.0059        # cap travel counted as a press [m]
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 12.0
   f_peak: 25.0
   x_peak: 0.004

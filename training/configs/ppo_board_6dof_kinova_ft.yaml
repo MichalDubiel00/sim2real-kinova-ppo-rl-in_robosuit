@@ -1,14 +1,9 @@
-# 6DOF: DOTRENOWANIE W OBWIEDNI ZGODNEJ Z INSTRUKCJA GEN3 R07 (2026-09-15, docs 6.38)
-# Start z modelu A (estop_curr/best_model, 16.01M): E-stop 20 N / 6 mm bez limitu 15/20 (h=2000),
-# z limitami wg instrukcji 1/20 i 1.15 wcisniecia/ep. Limity od kroku 0, bez kurikulum:
-# stawy 1.39/1.22 rad/s skalowane proporcjonalnie (tryb twist), narzedzie 0.5 m/s i 0.8727 rad/s.
-# Domyslne skale OSC (0.05 m, 0.5 rad). 8M krokow bez kryterium przerwania (przelom z LogStdClamp
-# wymagal wielu milionow krokow). Ewaluacja na 2 procesach co 200k (RAM: 8 env + 2 eval).
-# URUCHOMIENIE:
+# 6DOF fine-tune in the Gen3 R07 envelope (docs 6.38).
+# Start: model A (estop_curr best_model 16.01M; 1/20 in this envelope). Limits from step 0:
+# joints 1.39/1.22 rad/s scaled proportionally, tool 0.5 m/s / 0.8727 rad/s; E-stop 20 N / 6 mm.
+# Result: peak 10/40 at 17.41M and 7/40 at 17.81M (collisions 10.8), then degrades to 0/40.
 #   python training/train_board.py --config training/configs/ppo_board_6dof_kinova_ft.yaml \
-#       --resume logs/board_6dof/estop_curr/best_model/best_model.zip --timesteps 8000000
-
-
+#     --resume logs/board_6dof/estop_curr/best_model/best_model.zip --timesteps 8000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -31,36 +26,34 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
-base_x_offset: -0.1
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 8000000
-horizon: 2000
-random_order: true
+total_timesteps: 8000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
-joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22] # joint velocity limits [rad/s], enforced after each substep
 
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 200000
@@ -68,7 +61,7 @@ n_eval_episodes: 20
 log_dir: logs/board_6dof/kinova_ft
 tensorboard_log: logs/tensorboard
 
-button_estop_profile:
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 10.0
   f_peak: 20.0
   x_peak: 0.004
@@ -77,6 +70,6 @@ button_estop_profile:
   x_stroke: 0.006
   latch: true
 
-joint_vel_limit_mode: scale
-eef_twist_limits: [0.5, 0.8727]
-n_eval_envs: 2
+joint_vel_limit_mode: scale     # scale = proportional, direction kept (twist mode); clip = per joint
+eef_twist_limits: [0.5, 0.8727] # tool caps [m/s, rad/s] (Cartesian joystick mode)
+n_eval_envs: 2                  # parallel evaluation envs

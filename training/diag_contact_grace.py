@@ -1,27 +1,13 @@
 """
-diag_contact_grace.py
-======================
-Kontakt-jakosc diagnostyka (v2.4 vs v2.3): mierzy dokladnie to, co bylo
-zdiagnozowane z obserwacji uzytkownika 2026-07-20 jako wada v2.3 —
-brak gracji w klikaniu (obijanie sie o zle przyciski, wysoka predkosc
-kontaktu, asymetria szczek chwytaka).
-
-Uzycie:
+Contact quality diagnostics (v2.4 vs v2.3).
     python training/diag_contact_grace.py MODEL.zip --episodes 20 --seed 777
 
-Metryki (per krok z kontaktem palec-przycisk, agregowane per epizod i globalnie):
-  - obijanie (bumping): kontakt z przyciskiem != cel i JESZCZE NIEwcisnietym
-    — prawdziwe obijanie sie po drodze do celu
-  - zalegajacy kontakt (lingering): kontakt z przyciskiem != cel, ale JUZ
-    wcisnietym — artefakt przeskoku celu po sukcesie (palec dotyka dopiero-co
-    wcisnietego grzybka podczas odjazdu); raportowany OSOBNO, bo liczenie go
-    jako obijania zawyzalo metryke ~13x (93% "zlych kontaktow" to zaleganie)
-    i bylo prawdziwa przyczyna zapasci fine-tune v2.4
-  - contact_speed: norm predkosci EEF (get_site_xvelp) w chwili kontaktu
-    [m/s] — srednia, mediana, p95, max
-  - joint_asymmetry: |left_inner_finger_joint - right_inner_finger_joint|
-    [rad] w chwili kontaktu — miara "jedna szczeka dopchnieta do nadgarstka"
-    (fizyka kp=20 przegrywajacego z momentem uderzenia, nie bug)
+Per finger-button contact step:
+  bumping       contact with a non-target, not yet pressed button
+  lingering     contact with an already pressed non-target (post-press retreat);
+                reported separately - counting it as bumping inflated the metric ~13x
+  contact_speed EEF speed at contact [m/s]
+  joint_asymmetry |left - right inner finger joint| [rad] at contact
 """
 import sys
 sys.modules["tensorflow"] = None
@@ -54,8 +40,8 @@ def main():
     rif_adr = env.sim.model.jnt_qposadr[rif_id]
 
     contact_steps_total = 0
-    bump_steps = 0       # kontakt z NIEwcisnietym nie-celem (prawdziwe obijanie)
-    linger_steps = 0     # kontakt tylko z JUZ wcisnietymi nie-celami (odjazd)
+    bump_steps = 0       # contact with an unpressed non-target (real bumping)
+    linger_steps = 0     # contact only with already pressed non-targets (retreat)
     speeds = []
     asymmetries = []
     ep_success = []
@@ -98,24 +84,24 @@ def main():
     asymmetries = np.array(asymmetries) if asymmetries else np.array([0.0])
 
     print(f"Model: {args.model}")
-    print(f"Epizody: {args.episodes}, sukcesy: {sum(ep_success)}/{args.episodes}")
-    print(f"Kroki z kontaktem palec-przycisk: {contact_steps_total}")
-    print(f"Obijanie o NIEwcisniety nie-cel: {bump_steps} "
+    print(f"Episodes: {args.episodes}, successes: {sum(ep_success)}/{args.episodes}")
+    print(f"Finger-button contact steps: {contact_steps_total}")
+    print(f"Bumping an UNPRESSED non-target: {bump_steps} "
           f"({100.0 * bump_steps / max(1, contact_steps_total):.1f}%)")
-    print(f"Zalegajacy kontakt z wcisnietym nie-celem (odjazd po sukcesie): "
+    print(f"Lingering contact with a pressed non-target (post-success retreat): "
           f"{linger_steps} "
           f"({100.0 * linger_steps / max(1, contact_steps_total):.1f}%)")
-    print(f"Srednia frakcja obijania per epizod: "
+    print(f"Mean bumping fraction per episode: "
           f"{np.mean(ep_bump_frac):.3f}")
-    print(f"Predkosc EEF przy kontakcie [m/s]: mean={speeds.mean():.3f} "
+    print(f"EEF speed at contact [m/s]: mean={speeds.mean():.3f} "
           f"median={np.median(speeds):.3f} p95={np.percentile(speeds, 95):.3f} "
           f"max={speeds.max():.3f}")
-    print(f"Frakcja kontaktow >0.15 m/s: "
+    print(f"Fraction of contacts >0.15 m/s: "
           f"{100.0 * np.mean(speeds > 0.15):.1f}%")
-    print(f"Asymetria stawow palcow [rad]: mean={asymmetries.mean():.4f} "
+    print(f"Finger joint asymmetry [rad]: mean={asymmetries.mean():.4f} "
           f"median={np.median(asymmetries):.4f} p95={np.percentile(asymmetries, 95):.4f} "
           f"max={asymmetries.max():.4f}")
-    print(f"Frakcja kontaktow z asymetria >0.15 rad: "
+    print(f"Fraction of contacts with asymmetry >0.15 rad: "
           f"{100.0 * np.mean(asymmetries > 0.15):.1f}%")
 
 

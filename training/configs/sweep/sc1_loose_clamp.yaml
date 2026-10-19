@@ -1,21 +1,7 @@
-# SWEEP sc1_loose_clamp: SCRATCH etap 1: warunki v4like + shaping 400 + log_std<=0
-#
-# ODKRYCIE 2026-09-04 (docs 6.25): log_std ucieka w gore przez caly trening
-# (7DOF scratch_3M 1.00 -> v23_12M 13.71; 6DOF s2 21.32). Przy std~21 obcinane
-# jest 96 % skladowych akcji, |mu|=14.8 — polityka jest BANG-BANG. Premia
-# entropijna rosnie z sigma, a po obcieciu dalszy wzrost NIE zmienia zachowania:
-# darmowy dochod. INTERWENCJA: log_std_max (callback LogStdClamp).
-# ent_coef zostaje nominalny wszedzie tam, gdzie trzeba eksploracji — clamp juz
-# zamyka dochod, a ent_coef=0 grozi utknieciem w optimum "nie ruszaj sie".
-#
-# Ten bieg: force_gripper_closed=False, finger_press_gate=False, collision_cost=0.5, action_rate_cost=0.0, depress_shaping_k=400.0, log_std_max=0.0
-# SCRATCH, ETAP 1 — warunki v4like (chwytak WOLNY, bez bramki palcowej,
-# collision_cost 0.5, bez kary za szarpanie) + depress_shaping_k=400.
-# To jedyny uklad, w ktorym 6DOF nauczyl sie zadania od zera (6.16); shaping
-# jest konieczny, bo prog 12 mm bez niego jest funkcja SCHODKOWA (6.17).
-# MODEL Z TEGO BIEGU NIE NADAJE SIE NA SPRZET — wolny chwytak oznacza
-# klikanie czym popadnie. Zacieśnia go dopiero ft_sc1_v23.
-# BAZA DO OCENY: 53/100 @h=1500 (s2/best_model w tym env, docs 6.24).
+# log_std sweep (docs 6.25): log_std drifted up to sigma ~21, 96 % of action components
+# saturated (bang-bang). LogStdClamp caps log_std. Baseline: s2 53/100 @h=1500.
+# This run: scratch stage 1 (free gripper, no finger gate, collision 0.5, no action-rate penalty,
+# depth shaping 400) with log_std_max 0. Not a hardware model. Result: 15/100 at 4M.
 
 algorithm: PPO
 policy: MlpPolicy
@@ -36,29 +22,29 @@ policy_kwargs:
   - 256
   - 256
   activation_fn: tanh
-robot: Kinova3_6DOF
-force_gripper_closed: false
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.012
-base_x_offset: -0.1
-total_timesteps: 4000000
-horizon: 1000
-random_order: true
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
+force_gripper_closed: false     # gripper action overridden to closed
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.012         # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
+total_timesteps: 4000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 checkpoint_freq: 100000
 log_dir: logs/board_6dof/sweep/sc1_loose_clamp
 tensorboard_log: logs/tensorboard
-log_std_max: 0.0
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
 eval_freq: 100000
 n_eval_episodes: 20

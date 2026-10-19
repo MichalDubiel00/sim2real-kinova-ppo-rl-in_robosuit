@@ -1,3 +1,5 @@
+# PPO for ButtonBoard-v0, original 7DOF baseline (run v4, docs 6.3).
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -14,7 +16,7 @@ gae_lambda: 0.95
 clip_range: 0.2
 clip_range_vf: null
 
-ent_coef: 0.005      # mniejsza entropia — zadanie bardziej precyzyjne
+ent_coef: 0.005
 vf_coef: 0.5
 max_grad_norm: 0.5
 
@@ -22,21 +24,16 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-# 5 przyciskow w sekwencji — dluzszy trening niz pojedynczy przycisk
-total_timesteps: 3_000_000
+total_timesteps: 3_000_000      # ignored on --resume (--timesteps = additional steps)
 
-# Dluzszy epizod: 5 sekwencyjnych nacisniec przy control_freq 20 Hz
-horizon: 1000
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-# Domain randomization (sim2real)
-random_order: true
-board_pos_noise: 0.05
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
 
-# Szum percepcji (symulacja bledu estymacji pozy boardu, np. AprilTag):
-# staly bias pozycji per epizod [m], szum per krok [m], perturbacja osi
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board

@@ -1,15 +1,8 @@
 """
-Skala akcji OSC_POSE: ile z komendy jest realizowane i jak szybko.
-
-Config deklaruje output_max 0.05 m dla osi pozycji, ale to POZYCJA ZADANA dla
-kontrolera impedancyjnego (kp=150), nie obietnica przemieszczenia. Mierzone:
-przyrost ustalony [m/krok], stala czasowa (kroki do 90%), liniowosc.
-
-Stala czasowa jest kluczowa dla mostu do MoveIt Servo: Servo realizuje predkosc
-niemal natychmiast, wiec ta sama sekwencja akcji da tam ostrzejsza trajektorie.
-
-Os X mierzona w tyl (SIGNS) - tablica stoi na WALL_X=0.50, TCP startuje na
-x~0.33, wiec dodatnia akcja wjezdza w plyte po kilku krokach.
+OSC_POSE action scale: how much of the command is realised and how fast.
+output_max 0.05 m is the impedance controller's TARGET, not a displacement. Measures
+steady increment [m/step], time constant (steps to 90 %) and linearity.
+X is measured backwards: +X hits the board after a few steps.
 
     python training/diag_action_scale.py [--table] [--steps N]
 """
@@ -39,7 +32,7 @@ def build_env(robot, horizon):
 
 
 def sweep(env, axis, amplitude, steps, seed):
-    """Stala akcja przez `steps`. Zwraca (deltas (steps,3), collided)."""
+    """Constant action for `steps`. Returns (deltas (steps,3), collided)."""
     np.random.seed(seed)
     obs = env.reset()
     action = np.zeros(env.action_dim)
@@ -113,11 +106,8 @@ def main():
         print(f"{AXES[i]:>4} " + " ".join(f"{u:10.5f}" for u in ss)
               + f" {verdict:>10}")
 
-    # UWAGA: initialization_noise=None, wiec ramie zawsze startuje w TEJ SAMEJ
-    # konfiguracji stawow. Seed zmienia tylko poze tablicy, wysokosc bazy,
-    # kolejnosc przyciskow i bias percepcji. To NIE jest test zaleznosci
-    # wzmocnienia od konfiguracji ramienia - do tego trzeba najpierw ramie
-    # przestawic w rozne pozy.
+    # initialization_noise=None: the arm always starts in the same configuration, so this
+    # does not test gain vs arm configuration.
     print(f"\n=== repeatability, {args.seeds} seeds (board/base only, same arm pose) ===")
     print(f"{'axis':>4} {'mean':>10} {'min':>10} {'max':>10} {'spread':>8}")
     for i in AXES:

@@ -1,32 +1,15 @@
 """
-Porownanie modeli na ButtonBoard-v0 — parowane epizody
-======================================================
-Uzycie:
-    python training/compare_models.py logs/board/best_model/best_model_v4_6M.zip \
-                                      logs/board/best_model/best_model.zip
-    python training/compare_models.py A=sciezka1.zip B=sciezka2.zip --episodes 100
-    python training/compare_models.py model.zip --episodes 50 --csv wyniki.csv
+Paired model comparison on ButtonBoard-v0.
+    python training/compare_models.py A=path1.zip B=path2.zip --episodes 100
+    python training/compare_models.py model.zip --episodes 50 --csv results.csv
 
-Metodologia (pod prace):
-  PAROWANIE: przed KAZDYM epizodem generator losowy jest re-seedowany
-  wartoscia (seed + numer_epizodu). Cala losowosc srodowiska (pozycja boardu,
-  kolejnosc przyciskow, bias percepcji, szum per krok) idzie przez np.random,
-  wiec epizod k ma IDENTYCZNE warunki dla kazdego modelu — lacznie z sekwencja
-  szumu percepcji krok-po-kroku (liczba probek generatora na krok jest stala).
-  Trajektorie roznia sie wylacznie przez akcje polityki (deterministic=True,
-  fizyka MuJoCo deterministyczna).
+Pairing: np.random is re-seeded with (seed + episode) before every episode, so
+episode k has identical conditions (board pose, order, perception noise sequence)
+for every model; trajectories differ only by the policy's actions.
 
-Metryki (na epizod, potem agregaty):
-  - sukces: wszystkie 5 przyciskow wcisniete >= 12 mm (epizod terminuje)
-  - kroki: dlugosc epizodu (sredni czas sukcesu liczony TYLKO po sukcesach)
-  - kolizja: liczba krokow z kontaktem geomu robota z plyta (przyciski sie
-    nie licza — patrz ButtonBoardEnv._check_board_collision)
-  - misuse: liczba krokow z kontaktem OGNIWA RAMIENIA (robot0_*) z przyciskiem
-    — v2.3 karze to jak kolizje (kontakt chwytaka jest dozwolony, bo
-    towarzyszy poprawnym docisnieciom palcami); wcisniecie bez kontaktu
-    palcow z grzybkiem nadal nie liczy sie do sekwencji
-  - gladkosc: srednie ||a_t - a_{t-1}|| na krok (szarpanie komend, nie predkosc)
-  - stuck: przekatna bounding boxa pozycji EEF z ostatnich 200 krokow < 3 cm
+Metrics: success (all 5 pressed), steps, collision steps (board), misuse steps
+(arm link on a button), smoothness mean ||a_t - a_{t-1}||, stuck (EEF bounding box
+of the last 200 steps < 3 cm).
 """
 
 import argparse
@@ -34,7 +17,7 @@ import csv
 import os
 import sys
 
-sys.modules["tensorflow"] = None  # patrz docs 7.6 (segfault TF vs torch._dynamo)
+sys.modules["tensorflow"] = None  # docs 7.6 (TF vs torch._dynamo segfault)
 
 import numpy as np
 
@@ -44,19 +27,14 @@ import robosuite as suite
 from envs.button_board import ButtonBoardEnv
 from envs.controller_scale import with_osc_output_max
 
-# Limity predkosci stawow Gen3 6DOF — ros2_kortex, plik
-# kortex_description/arms/gen3/6dof/config/joint_limits.yaml:
-# maximum_velocities = 0.8727 rad/s dla WSZYSTKICH szesciu stawow (= 50 st./s,
-# zgodne z karta katalogowa). NIE mylic z wartosciami 1.3963/1.2218 z PR #241,
-# ktory zmienial tagi <velocity> w gen3_macro.xacro — patrz docs 6.31.
+# Gen3 6DOF joint velocity limits: 0.8727 rad/s on all joints (kortex_description
+# joint_limits.yaml, matches the datasheet; not the PR #241 values, docs 6.31).
 HW_JOINT_VEL = [0.8727] * 6
-# Instrukcja Gen3 R07 (docs 6.37): limity ogolne tab. 46, tryb twist = skalowanie proporcjonalne
+# Gen3 R07 manual (docs 6.37): general limits table 46; twist mode scales proportionally
 KINOVA_JOINT_VEL = [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
 KINOVA_TWIST = (0.5, 0.8727)
-# Instrukcja Gen3 R07, tab. 48 (Gen3 6 DoF, TWARDE limity przyspieszen — obowiazuja
-# zawsze). Tab. 49 (1.0 rad/s^2 dla j1-3) dotyczy TYLKO angular joystick i joint
-# trajectory; nasz tor to Cartesian joystick (twist), ktoremu instrukcja nakłada
-# wylacznie limity pozycji i predkosci (s. 100). Docs 6.44.
+# Gen3 R07 table 48: HARD acceleration limits (always apply). Table 49 covers only
+# angular joystick and joint trajectory, not twist (docs 6.44).
 HW_JOINT_ACC = [5.2, 5.2, 5.2, 10.0, 10.0, 10.0]
 
 
@@ -68,17 +46,9 @@ def flatten_obs(obs_dict):
 
 
 def run_episode(env, model, seed, action_ema=None):
-    """Jeden epizod o warunkach wyznaczonych przez seed; zwraca metryki.
-
-    action_ema: stala filtru dolnoprzepustowego na AKCJI (0 < alpha <= 1).
-    a_t = alpha * a_polityki + (1 - alpha) * a_{t-1}. alpha = 1 lub None = bez
-    filtru. Motywacja sim2real: polityka komenderuje bang-bang (||da|| 1.335 na
-    krok przy 71 % nasyceniu), co na sprzecie oznacza szarpanie komendy o dwie
-    trzecie zakresu co 50 ms i przekraczanie limitow PRZYSPIESZEN. Filtr jest
-    zmiana po stronie WDROZENIA, nie treningu — dlatego nie podpada pod zakaz
-    naprawiania zachowania rewardem (6.20).
-    """
-    np.random.seed(seed)  # parowanie: identyczne warunki dla kazdego modelu
+    """One episode with seed-defined conditions; returns metrics.
+    action_ema: low-pass alpha on the action (None/1 = off), a deployment-side filter."""
+    np.random.seed(seed)  # pairing: identical conditions for every model
     obs = env.reset()
 
     arm = env.robots[0].arms[0]
@@ -139,23 +109,23 @@ def summarize(label, rows):
 
     n = len(rows)
     print(f"\n=== {label} (n={n}) ===")
-    print(f"sukcesy:                  {succ.sum()}/{n} ({100*succ.mean():.0f}%)")
+    print(f"successes:                {succ.sum()}/{n} ({100*succ.mean():.0f}%)")
     if succ.any():
-        print(f"sredni czas sukcesu:      {steps[succ].mean():.0f} krokow "
-              f"({steps[succ].mean()/20:.1f} s przy 20 Hz)")
-    print(f"epizody z kolizja:        {(coll > 0).sum()}/{n}")
-    print(f"sr. krokow kolizji/epizod: {coll.mean():.1f}")
+        print(f"mean time to success:     {steps[succ].mean():.0f} steps "
+              f"({steps[succ].mean()/20:.1f} s at 20 Hz)")
+    print(f"episodes with collision:  {(coll > 0).sum()}/{n}")
+    print(f"mean collision steps/ep:  {coll.mean():.1f}")
     spot = np.array([r.get("spot_steps", 0) for r in rows])
     if spot.sum() or any("spot_steps" in r for r in rows):
-        print(f"epizody z kontaktem ze Spotem: {(spot > 0).sum()}/{n}")
-        print(f"sr. krokow kontaktu ze Spotem: {spot.mean():.1f}")
-    print(f"epizody z misuse przycisku: {(misuse > 0).sum()}/{n}")
-    print(f"sr. krokow misuse/epizod:  {misuse.mean():.1f}")
-    print(f"gladkosc sr. ||da||/krok:  {rate.mean():.4f}")
+        print(f"episodes with Spot contact: {(spot > 0).sum()}/{n}")
+        print(f"mean Spot contact steps:  {spot.mean():.1f}")
+    print(f"episodes with button misuse: {(misuse > 0).sum()}/{n}")
+    print(f"mean misuse steps/ep:     {misuse.mean():.1f}")
+    print(f"smoothness mean ||da||/step: {rate.mean():.4f}")
     fails = [int(((~succ) & (pressed == k)).sum()) for k in range(5)]
-    print(f"porazki wg wcisnietych (0..4/5): {fails}, stuck: {stuck.sum()}")
+    print(f"failures by pressed count (0..4/5): {fails}, stuck: {stuck.sum()}")
     per_btn = np.array([r["pressed_mask"] for r in rows])  # (n, 5)
-    print("wcisniecia per przycisk:   "
+    print("presses per button:       "
           + ", ".join(f"btn{i}: {per_btn[:, i].sum()}/{n}" for i in range(per_btn.shape[1])))
     return succ
 
@@ -164,97 +134,101 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("models", nargs="+",
-                   help="sciezki do modeli, opcjonalnie 'etykieta=sciezka.zip'")
+                   help="model paths, optionally 'label=path.zip'")
     p.add_argument("--episodes", type=int, default=100)
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--horizon", type=int, default=1000)
     p.add_argument("--button-stiffness", type=float, default=None,
-                   help="sztywnosc sprezyny grzybka [N/m]; brak = 500 z button.xml (~6 N "
-                        "przy 12 mm). Typowy E-stop 20-40 N -> 1700-3300 N/m (docs 6.33)")
+                   help="cap spring stiffness [N/m]; default 500 from button.xml (~6 N "
+                        "at 12 mm). Typical E-stop 20-40 N -> 1700-3300 N/m (docs 6.33)")
     p.add_argument("--pos-max", type=float, default=None,
-                   help="output_max translacji OSC [m/krok]; MUSI byc zgodne z treningiem "
-                        "modelu (domyslnie 0.05; docs 6.36)")
+                   help="OSC translation output_max [m/step]; MUST match the model's "
+                        "training (default 0.05; docs 6.36)")
     p.add_argument("--rot-max", type=float, default=None,
-                   help="output_max obrotu OSC [rad/krok]; MUSI byc zgodne z treningiem "
-                        "modelu (domyslnie 0.5; docs 6.35)")
+                   help="OSC rotation output_max [rad/step]; MUST match the model's "
+                        "training (default 0.5; docs 6.35)")
     p.add_argument("--estop-config", type=str, default=None,
-                   help="YAML treningu: bierze z niego button_estop_profile i "
-                        "activation_depth (np. E-stop 20 N / 6 mm). Wyklucza --estop")
+                   help="training YAML: takes button_estop_profile and "
+                        "activation_depth from it (e.g. E-stop 20 N / 6 mm). Excludes --estop")
     p.add_argument("--estop", action="store_true",
-                   help="nieliniowy zatrzaskowy model E-stopu "
-                        "ButtonBoardEnv.ESTOP_PROFILE_EXAMPLE (15->35 N do 3.5 mm, "
-                        "spadek do 5 N, skok 5 mm, zatrzask; docs 6.34). Bez "
-                        "--activation-depth prog = punkt rozwarcia stykow (3.8 mm)")
+                   help="non-linear latching E-stop model "
+                        "ButtonBoardEnv.ESTOP_PROFILE_EXAMPLE (15->35 N up to 3.5 mm, "
+                        "drop to 5 N, 5 mm travel, latch; docs 6.34). Without "
+                        "--activation-depth the threshold = contact opening point (3.8 mm)")
     p.add_argument("--kinova-limits", action="store_true",
-                   help="limity wg instrukcji Gen3 R07 dla trybu twist: stawy 1.39/1.22 rad/s "
-                        "skalowane proporcjonalnie + narzedzie 0.5 m/s, 0.8727 rad/s (docs 6.37)")
+                   help="Gen3 R07 limits for twist mode: joints 1.39/1.22 rad/s "
+                        "scaled proportionally + tool 0.5 m/s, 0.8727 rad/s (docs 6.37)")
     p.add_argument("--hw-limits", action="store_true",
-                   help="nalozy limity predkosci stawow z firmware Gen3 "
-                        "(ros2_kortex joint_limits.yaml): 0.8727 rad/s wszystkie stawy")
+                   help="apply Gen3 firmware joint velocity limits "
+                        "(ros2_kortex joint_limits.yaml): 0.8727 rad/s on all joints")
     p.add_argument("--gain", type=float, default=None,
-                   help="STALE wzmocnienie mechanizmu na wszystkich 6 osiach "
-                        "(1.0 = jak w treningu). Symuluje rozbieznosc sim2sim "
-                        "zmierzona w Webots: 0.32 transl., 0.10 obrot (docs 6.30).")
+                   help="FIXED mechanism gain on all 6 axes "
+                        "(1.0 = as in training). Simulates the sim2sim mismatch "
+                        "measured in Webots: 0.32 translation, 0.10 rotation (docs 6.30).")
     p.add_argument("--robot", type=str, default="Kinova3",
-                   help="Kinova3 (7DOF, stock) albo Kinova3_6DOF (uczelniany); "
-                        "modele 6DOF sa NIEkompatybilne z 7DOF (obs 120 vs 128)")
+                   help="Kinova3 (7DOF, stock) or Kinova3_6DOF (lab variant); "
+                        "6DOF models are NOT compatible with 7DOF (obs 120 vs 128)")
     p.add_argument("--activation-depth", type=float, default=None,
-                   help="prog wcisniecia w metrach; domyslnie z env (0.012), "
-                        "modele 6DOF etapu 1 trenowane na 0.010")
+                   help="press threshold in metres; default from the env (0.012), "
+                        "stage-1 6DOF models were trained at 0.010")
     p.add_argument("--no-finger-gate", action="store_true",
-                   help="wylacz bramke palcowa. MUSI byc zgodne z trybem, w ktorym "
-                        "model trenowal — etap 1 kurikulum (`depress`, `hwlim_s1`) ma "
-                        "finger_press_gate=false, wiec mierzony z wlaczona bramka "
-                        "dostaje 0/40 mimo poprawnego dojazdu do przycisku")
+                   help="disable the finger gate. MUST match the mode the model was "
+                        "trained in - curriculum stage 1 (`depress`, `hwlim_s1`) uses "
+                        "finger_press_gate=false, so evaluating it with the gate on "
+                        "gives 0/40 despite reaching the button")
     p.add_argument("--free-gripper", action="store_true",
-                   help="chwytak sterowany przez polityke (force_gripper_closed"
-                        "=False). MUSI byc zgodne z trybem, w ktorym model byl "
-                        "trenowany — niezgodnosc zmienia zadanie (pomiar A/B: "
-                        "82%% -> 50%% na tym samym modelu, docs 6.15)")
+                   help="gripper controlled by the policy (force_gripper_closed"
+                        "=False). MUST match the mode the model was "
+                        "trained in - a mismatch changes the task (A/B: "
+                        "82%% -> 50%% on the same model, docs 6.15)")
     p.add_argument("--acc-limits", action="store_true",
-                   help="TWARDE limity przyspieszen Gen3 6DOF wg instrukcji R07 tab. 48: "
-                        "[5.2 x3, 10.0 x3] rad/s^2. UWAGA: 1.0 rad/s^2 z tab. 49 dotyczy "
-                        "TYLKO angular joystick/joint trajectory, NIE toru twist (docs 6.44)")
+                   help="HARD Gen3 6DOF acceleration limits, R07 manual table 48: "
+                        "[5.2 x3, 10.0 x3] rad/s^2. NOTE: 1.0 rad/s^2 from table 49 applies "
+                        "ONLY to angular joystick/joint trajectory, NOT to twist (docs 6.44)")
+    p.add_argument("--action-delay", type=int, default=None, metavar="K",
+                   help="loop dead time: the command from step t acts at t+K "
+                        "(docs 6.52). robosuite has ZERO dead time; on hardware "
+                        "every ROS->firmware->ROS hop adds some. 1 step = 50 ms")
     p.add_argument("--acc-mode", choices=["clip", "scale"], default="clip",
-                   help="semantyka przycinania przyspieszen (docs 6.50). clip = niezaleznie "
-                        "na kazdym stawie (zmienia kierunek ruchu). scale = caly przyrost "
-                        "predkosci skalowany jednym wspolczynnikiem, kierunek zachowany — "
-                        "tak wg instrukcji Gen3 R07 robi firmware w trybie twist. Obie wersje "
-                        "trzymaja TE SAMA obwiednie; roznica jest w kierunku po przycieciu")
+                   help="acceleration clipping semantics (docs 6.50). clip = independently "
+                        "per joint (changes motion direction). scale = the whole velocity "
+                        "increment scaled by one factor, direction kept - "
+                        "what the Gen3 firmware does in twist mode (R07 manual). Both "
+                        "keep the SAME envelope; they differ in direction after clipping")
     p.add_argument("--acc-ref", choices=["qvel", "cmd"], default="qvel",
-                   help="skala, w ktorej dziala limit przyspieszen (docs 6.48). "
-                        "qvel = wzgledem zmierzonej predkosci z poprzedniego podkroku "
-                        "(dotychczasowe; budzet zjada tetnienie OSC, przy a=0 mediana "
-                        "40 rad/s^2 na j3 mimo stojacego ramienia). cmd = wzgledem "
-                        "wlasnej poprzedniej komendy, czyli nachylenie ZADANEGO profilu "
-                        "predkosci — to, co ogranicza firmware")
+                   help="reference of the acceleration limit (docs 6.48). "
+                        "qvel = relative to the measured velocity of the previous substep "
+                        "(legacy; the budget is eaten by OSC ripple, median "
+                        "40 rad/s^2 on j3 with the arm still at a=0). cmd = relative to "
+                        "the own previous command, i.e. the slope of the COMMANDED velocity "
+                        "profile - what the firmware limits")
     p.add_argument("--base-x-offset", type=float, default=None, metavar="M",
-                   help="odleglosc postoju Spota: przesuniecie bazy ramienia wzdluz X. "
-                        "Domyslne env to -0.10; biegi od docs 6.42 uzywaja -0.34. "
-                        "BEZ tego ocena modelu uczonego na -0.34 szla by w INNEJ scenie")
+                   help="Spot stand-off: arm base shift along X. "
+                        "Env default is -0.10; runs since docs 6.42 use -0.34. "
+                        "WITHOUT it a model trained at -0.34 would be evaluated in a DIFFERENT scene")
     p.add_argument("--init-qpos", type=str, default=None, metavar="q1,..,q6",
-                   help="poza startowa jako 6 katow po przecinku; brak = domyslna "
-                        "(chwytak pionowo w dol, kamera nadgarstkowa nie widzi tablicy)")
+                   help="start pose as 6 comma-separated angles; default = robot default "
+                        "(gripper pointing down, the wrist camera cannot see the board)")
     p.add_argument("--obs-acc-saturation", action="store_true",
-                   help="dodaj sygnal nasycenia do obserwacji (obs 120 -> 132, docs 6.47). Modele sprzed 2026-10-07 maja wejscie 120 i NIE wczytaja sie z ta flaga")
+                   help="add the saturation signal to the observation (obs 120 -> 132, docs 6.47). Models before 2026-10-07 have input 120 and will NOT load with this flag")
     p.add_argument("--action-rate-limit", type=float, default=None, metavar="D",
-                   help="OGRANICZENIE tempa komendy: |a_t - a_{t-1}| <= D na skladowa, "
-                        "nakladane przed kontrolerem (docs 6.47). Nie kara — niezbywalne")
+                   help="command rate LIMIT: |a_t - a_{t-1}| <= D per component, "
+                        "applied before the controller (docs 6.47). A constraint, not a penalty")
     p.add_argument("--approach-speed-cost", type=float, default=0.0,
-                   help="kara za predkosc zblizania ponad v_dop = dystans/0.3 s (docs 6.45); "
-                        "w EWALUACJI zwykle 0 — zmienia nagrode, nie zachowanie")
+                   help="penalty on approach speed above v_ok = distance/0.3 s (docs 6.45); "
+                        "usually 0 in EVALUATION - changes the reward, not the behaviour")
     p.add_argument("--spot-body", action="store_true",
-                   help="wstaw bryle korpusu Spota pod ramieniem (zmierzona z Webotsa, "
-                        "docs 6.41). W treningu tego NIE BYLO — wlaczenie zmienia zadanie")
+                   help="insert the Spot body under the arm (measured in Webots, "
+                        "docs 6.41). Absent in older training - enabling it changes the task")
     p.add_argument("--spot-front-cam", action="store_true",
-                   help="wstaw przednia kamere Spota (obrys Kinecta z Webotsa jako bufor): "
-                        "listwa 28 cm wszerz, 21-27 cm przed podstawa, na jej wysokosci")
+                   help="insert the front Spot camera (Kinect outline from Webots as a buffer): "
+                        "28 cm wide bar, 21-27 cm in front of the base, at its height")
     p.add_argument("--action-ema", type=float, default=None, metavar="ALPHA",
-                   help="filtr dolnoprzepustowy na akcji: a_t = alpha*a + (1-alpha)*a_{t-1}. "
-                        "1.0 lub brak = bez filtru. Zmiana po stronie wdrozenia — "
-                        "lagodzi bang-bang (||da|| 1.335/krok) przed wyjsciem na sprzet")
+                   help="low-pass filter on the action: a_t = alpha*a + (1-alpha)*a_{t-1}. "
+                        "1.0 or unset = no filter. A deployment-side change - "
+                        "softens bang-bang (||da|| 1.335/step) before hardware")
     p.add_argument("--csv", type=str, default=None,
-                   help="zapis metryk per epizod do pliku CSV")
+                   help="write per-episode metrics to a CSV file")
     return p.parse_args()
 
 
@@ -272,33 +246,31 @@ def main():
     estop_prof = ButtonBoardEnv.ESTOP_PROFILE_EXAMPLE if args.estop else None
     if args.estop_config:
         if args.estop:
-            raise SystemExit("--estop i --estop-config wykluczaja sie")
+            raise SystemExit("--estop and --estop-config are mutually exclusive")
         import yaml
         _c = yaml.safe_load(open(args.estop_config))
         estop_prof = _c["button_estop_profile"]
         if args.activation_depth is None:
             args.activation_depth = _c.get("activation_depth")
-        print(f"[estop] z {args.estop_config}: {estop_prof}, prog {args.activation_depth}")
+        print(f"[estop] from {args.estop_config}: {estop_prof}, threshold {args.activation_depth}")
     ctrl = with_osc_output_max(suite.load_composite_controller_config(
         controller="BASIC", robot=args.robot), args.pos_max, args.rot_max)
     env = ButtonBoardEnv(
         robots=args.robot, controller_configs=ctrl,
         has_renderer=False, has_offscreen_renderer=False,
         use_camera_obs=False, horizon=args.horizon,
-        # board_pos_noise / base_z_noise / percep_* CELOWO nie podawane:
-        # biora domyslne z ButtonBoardEnv, zeby pomiar szedl w TYCH SAMYCH
-        # warunkach co trening. Do 2026-09-07 bylo tu zaszyte 0.05, ktore
-        # nie zostalo zaktualizowane przy podniesieniu szumu 01.09 (docs 6.24).
+        # noise params deliberately omitted: env defaults, same as training (docs 6.24).
         random_order=True,
         activation_depth=args.activation_depth,
         force_gripper_closed=not args.free_gripper,
         finger_press_gate=not args.no_finger_gate,
-        # zakres zdegenerowany do punktu = wzmocnienie STALE, nie losowane
+        # degenerate range = FIXED gain
         gain_noise_lin=((args.gain, args.gain) if args.gain is not None else None),
         gain_noise_rot=((args.gain, args.gain) if args.gain is not None else None),
         joint_acc_limits=(HW_JOINT_ACC if args.acc_limits else None),
         joint_acc_limit_ref=args.acc_ref,
         joint_acc_limit_mode=args.acc_mode,
+        action_delay_steps=args.action_delay,
         joint_vel_limits=(KINOVA_JOINT_VEL if args.kinova_limits
                           else HW_JOINT_VEL if args.hw_limits else None),
         joint_vel_limit_mode=("scale" if args.kinova_limits else "clip"),
@@ -322,8 +294,8 @@ def main():
         for ep in range(args.episodes):
             r = run_episode(env, model, seed=args.seed + ep, action_ema=args.action_ema)
             rows.append(r)
-            print(f"  ep{ep:03d}: sukces={r['success']} {r['pressed']}/5 "
-                  f"kroki={r['steps']} kolizja={r['coll_steps']} "
+            print(f"  ep{ep:03d}: success={r['success']} {r['pressed']}/5 "
+                  f"steps={r['steps']} collision={r['coll_steps']} "
                   f"misuse={r['misuse_steps']} "
                   f"rate={r['action_rate']:.3f}", flush=True)
         all_rows[label] = rows
@@ -332,7 +304,7 @@ def main():
     for label, rows in all_rows.items():
         succ_by_model[label] = summarize(label, rows)
 
-    # Test istotnosci roznicy sukcesow dla dokladnie dwoch modeli
+    # Significance test for exactly two models
     if len(specs) == 2:
         try:
             from scipy.stats import fisher_exact
@@ -340,15 +312,14 @@ def main():
             table = [[int(s1.sum()), int((~s1).sum())],
                      [int(s2.sum()), int((~s2).sum())]]
             _, pval = fisher_exact(table)
-            print(f"\nFisher exact ({l1} vs {l2}), sukcesy: p = {pval:.2e}")
+            print(f"\nFisher exact ({l1} vs {l2}), successes: p = {pval:.2e}")
         except ImportError:
             pass
 
     if args.csv:
         with open(args.csv, "w", newline="") as f:
             w = csv.writer(f)
-            # kroki_spot na KONCU, zeby stare skrypty czytajace po indeksie
-            # (paired_candidates.py, analizy z 6.25-6.40) dalej dzialaly
+            # kroki_spot LAST so index-based readers keep working
             w.writerow(["model", "epizod", "seed", "sukces", "wcisniete",
                         "kroki", "kroki_kolizji", "kroki_misuse",
                         "action_rate", "stuck", "kroki_spot"])
@@ -359,7 +330,7 @@ def main():
                                 r["misuse_steps"],
                                 f"{r['action_rate']:.5f}", int(r["stuck"]),
                                 r.get("spot_steps", 0)])
-        print(f"CSV zapisany: {args.csv}")
+        print(f"CSV saved: {args.csv}")
 
     env.close()
 

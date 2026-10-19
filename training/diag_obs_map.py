@@ -1,10 +1,7 @@
 """
-Mapa wektora obserwacji ButtonBoardEnv -> envs/obs_contract.json.
-
-Kolejnosc wynika z obs_dict.values() w RobosuiteGymWrapper._flatten_obs
-(kolejnosc WSTAWIANIA kluczy, nie sortowanie) i nigdzie nie jest zapisana
-jawnie. Wektor jest ZDUBLOWANY: agregaty *-state powtarzaja pojedyncze klucze.
-Zla kolejnosc nie daje bledu, tylko absurdalnie niski wynik (docs 6.22).
+ButtonBoardEnv observation map -> envs/obs_contract.json.
+Order comes from obs_dict insertion order and is duplicated by the *-state
+aggregates; a wrong order gives no error, only a very low score (docs 6.22).
 
     python training/diag_obs_map.py [--json]
 """
@@ -24,7 +21,7 @@ from envs.button_board import ButtonBoardEnv
 
 ROBOTS = ["Kinova3_6DOF", "Kinova3"]
 
-# Opisy do JSON po angielsku - plik czyta kod na robocie (ROS/MoveIt).
+# JSON descriptions in English: read by code on the robot.
 DESC = {
  "robot0_joint_pos":      ("joint angles", "rad", "joint", "joint_states.position - VERIFY ORDERING"),
  "robot0_joint_pos_cos":  ("cosines of joint angles", "-", "joint", "removes discontinuity at +/-pi"),
@@ -73,7 +70,7 @@ def print_map(kmap, dim, robot):
 
 
 def verify(env, ref):
-    """Czy kolejnosc kluczy jest stabilna i agregaty to faktycznie kopie."""
+    """Is the key order stable and are the aggregates real copies?"""
     print("\n--- ordering stability ---")
     bad = []
     for s in (0, 1, 7, 42, 1234, 9999):

@@ -1,83 +1,10 @@
-# 6DOF: FINE-TUNE shapingiem glebokosci z modelu v4like @6M (2026-08-03)
-#
-# Wznowienie z logs/board_6dof/v4like/ppo_board_final.zip (NIE best_model —
-# finalny jest lepszy zadaniowo: 1.18 vs 0.88 wcisniecia/ep, btn3 10 vs 2;
-# best_model wybierany po rewardzie eval, ktory przy zerze sukcesow jest
-# zdominowany przez shaping i kary — patrz docs 6.16).
-#
-# Uzasadnienie fine-tune zamiast scratchu: polityka @6M ma juz to, co trudne
-# (dolot, unikanie kolizji 36.7 kroku/ep, docisk do 7.6 mm); brakuje jej
-# przyrostu na JEDNEJ wielkosci i wlasnie na nia depress_shaping daje
-# gradient. To ten sam schemat, ktory zadzialal u 7DOF: scratch v4 ->
-# zaciesnianie fine-tunem na gotowej polityce -> v2.3 (90/100).
-# To NIE jest blad z s1_contaminated: tam zmiany doklejano W TRAKCIE biegu
-# do deformujacej sie polityki, tu jest osobny etap ze STALYM configiem.
-#
-# RYZYKO: krytyk jest skalibrowany na stary reward i musi sie przestroic
-# (spodziewany chwilowy spadek explained_variance), a polityka moze siedziec
-# w lokalnym optimum "docisnij 7.6 mm i przestan". Kryterium: jesli w ciagu
-# ~1M krokow mediana glebokosci nie rusza z ~7.6 mm, wracamy do scratchu
-# (ppo_board_6dof_depress.yaml) — 12 h szybciej niz bez tej proby.
-#
-# Budzet: 3M krokow DODATKOWYCH (6M -> 9M).
-#
-# PRZEBIEG FAKTYCZNY:
-#   etap 1: 6.00M -> 8.29M (przerwany na zyczenie uzytkownika). Kryterium
-#           z akapitu wyzej SPELNIONE z duzym zapasem: mediana glebokosci
-#           7.6 -> 10.9 mm po 0.5M i 11.4 mm po 1M, pierwszy sukces @6.76M
-#           (v4like nie mial ZADNEGO przez cale 6M), sukces po odcinkach
-#           0 % -> 3.0 % -> 9.0 % -> 10.9 %, reward eval -0.029 -> +0.243.
-#           Scratch (ppo_board_6dof_depress.yaml) NIE jest juz potrzebny.
-#   etap 2: wznowienie z ppo_board_8212928_steps.zip na 6M DODATKOWYCH
-#           (-> ~14.2M). Powod: przy zatrzymaniu trend sukcesu wciaz rosl,
-#           wiec 9M bylo odcieciem arbitralnym, nie plateau.
-# UWAGA: --timesteps liczy kroki DODATKOWE (SB3 przy reset_num_timesteps=
-# False dolicza je do num_timesteps z checkpointu), wiec total_timesteps
-# ponizej jest przy wznowieniu IGNOROWANY.
-#
-# --- ponizej oryginalny naglowek wariantu scratch ---
-#
-# 6DOF na poprawionej geometrii + SHAPING GLEBOKOSCI od kroku 0 (2026-08-03)
-#
-# Wynik biegu v4like (6M, docs 6.16): geometria naprawiona skutecznie —
-# problem btn3 zniknal (14/14/12/10/9), kolizyjnosc spadla ~7x (36.7 vs 248
-# krokow/ep), efektywnosc wcisniec wzrosla ~1.8x przy POLOWIE budzetu.
-# Ale sukcesow ~0: mediana glebokosci utknela na ~7.6 mm i NIE ruszyla sie
-# miedzy 3M a 4M. Przy depress_shaping_k=0 prog 12 mm jest funkcja
-# SCHODKOWA — na odcinku 7.6 -> 12 mm polityka nie dostaje zadnego
-# gradientu, wiec nie ma sie po czym wspinac.
-#
-# Ten config = v4like z JEDNA zmieniona zmienna: depress_shaping_k 0 -> 400
-# (wartosc z historii projektu, s1_clean). Shaping jest potencjalowy i
-# teleskopuje sie (guard na zmianie celu), wiec nie generuje darmowego
-# dochodu; pelne wcisniecie 12 mm daje 400*0.012 = 4.8 wobec PRESS_BONUS 25,
-# czyli ok. 19 % — gradient bez dominowania nad bonusem.
-# Budzet 6M taki sam jak v4like, zeby porownanie bylo kontrolowane.
-#
-# --- ponizej oryginalny naglowek v4like (geometria, 4 usterki) ---
-#
-# 6DOF, ETAP 1 na POPRAWIONEJ GEOMETRII — replikacja warunkow v4 (2026-08-02)
-#
-# Poprzednie przebiegi 6DOF (s1_contaminated, s1_clean) utknely na 3-6 %
-# sukcesu. Audyt wzgledem commitow z pierwszymi sukcesami 5/5 (9f8b4dd)
-# wykazal, ze reward i hiperparametry byly OK, ale zadanie NIE bylo tym
-# samym zadaniem co u dzialajacego 7DOF — patrz docs 6.15. Cztery usterki:
-#
-#   1. baza ramienia na 1.562 m zamiast 0.65 m (KINOVA_BASE_Z bylo
-#      przesunieciem doliczanym do cokolu 0.912 m, nie wysokoscia),
-#   2. force_gripper_closed=True od kroku 0, NIEwylaczalne z YAML
-#      (weszlo w 7332a99, JUZ PO udanym scratchu v4),
-#   3. tablica na 1.20 m zamiast 60 cm z regulaminu Rescue League,
-#   4. brak obrotu tablicy o 45 st. (przyciski w pionie/poziomie zamiast
-#      na przekatnych, jak montuje sie omniboard w zawodach).
-#
-# Ten config odtwarza warunki, w ktorych 7DOF nauczyl sie zadania od zera
-# (pierwsze 5/5 @1.55M), tyle ze na robocie 6DOF i poprawnej geometrii:
-# chwytak WOLNY, bramka palcowa OFF, prog 12 mm (nominalny — obnizka do
-# 10 mm byla obejsciem zlej geometrii), horyzont 1000, lagodna kolizja 0.5,
-# bez kary za szarpanie i bez shapingu glebokosci (v4 ich nie mial).
-#
-# Hiperparametry PPO identyczne jak ppo_board.yaml (run v4).
+# 6DOF fine-tune with depth shaping (docs 6.17).
+# Start: v4like ppo_board_final.zip @6M (better than best_model at zero successes, docs 6.16).
+# Only change vs v4like: depress_shaping_k 0 -> 400. Free gripper, no finger gate, h=1000.
+# Result: 80/100 @h=1000 at 14.23M (12 mm threshold), 41.6 collision steps/ep.
+#   python training/train_board.py --config training/configs/ppo_board_6dof_depress_ft.yaml \
+#     --resume logs/board_6dof/v4like/ppo_board_final.zip --timesteps 6000000
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -102,32 +29,28 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Warunki v4 (scratch, ktory zadzialal):
-force_gripper_closed: false   # KLUCZOWE — v4 sterowal chwytakiem swobodnie
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-depress_shaping_k: 400.0
-activation_depth: 0.012
+force_gripper_closed: false     # gripper action overridden to closed
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+activation_depth: 0.012         # cap travel counted as a press [m]
 
-# Geometria (domyslne w env po naprawie, podane jawnie dla jasnosci):
-base_x_offset: -0.10          # poza startowa wolna od kontaktu z tablica
+base_x_offset: -0.10            # Spot stand-off: arm base shift toward the wall [m]
 
-# 6M: v4 na 7DOF mial pierwsze 5/5 @1.55M i 50-70 % @2.8-3M; 6M daje zapas
-# na potwierdzenie diagnozy takze przy 6DOF (wolniejszym kinematycznie).
-total_timesteps: 3_000_000
-horizon: 1000
+total_timesteps: 3_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board_6dof/depress_ft

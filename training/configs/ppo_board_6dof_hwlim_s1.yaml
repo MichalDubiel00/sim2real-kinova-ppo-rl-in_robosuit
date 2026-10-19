@@ -1,50 +1,13 @@
-# 6DOF SCRATCH Z LIMITAMI FIRMWARE — ETAP 1: "wciskanie sie oplaca" (2026-09-12)
-#
-# OD ZERA, bez --resume. Fine-tune bazy 15.91M pod limity DAL 5/40 (docs 6.31):
-# model niesie 16M krokow nawykow wyuczonych POZA obwiednia sprzetowa i to one
-# sa kotwica. Trzeba nauczyc od poczatku W obwiedni.
-#
-# --- KOLEJNOSC (odtworzenie kurikulum, ktore JEDYNE zadzialalo) ---
-#
-#   etap 1 (TEN PLIK)  chwytak SWOBODNY, bez bramki palcowej, collision_cost 0.5,
-#                      action_rate_cost 0.0  -> nauczyc, ze WCISKANIE sie oplaca
-#   etap 2 (hwlim_s2)  chwytak zamkniety + bramka + pelne kary v2.3
-#                      -> zacisnac pod protokol sprzetowy
-#
-# Historia (docs 6.17, 6.18): `depress` 80/100 @h=1000 -> `s2` 52/100 przy
-# kolizyjnosci 4.7x nizszej. Pelne kary OD ZERA nie zadzialaly ani razu —
-# polityka uczy sie NIE DOTYKAC zamiast WCISKAC, bo nagroda za wcisniecie jest
-# rzadka i trzeba ja najpierw znalezc.
-#
-# Z limitami predkosci argument jest MOCNIEJSZY: nadgarstek jest dlawiony
-# w ~47 % krokow (docs 6.31), wiec znalezienie zachowania, ktore w ogole wciska,
-# bedzie trudniejsze niz w 6.17.
-#
-# --- ROZNICA WOBEC ORYGINALNEGO ETAPU 1 ---
-#
-# `log_std_max` OD POCZATKU. Oryginalny `depress` powstal przed odkryciem
-# eksplozji log_std (docs 6.25) — zaden bieg bez clampa jej nie uniknal.
-# To jedyna celowa zmiana wobec kurikulum z 6.17, poza limitami.
-#
-# --- KRYTERIUM ---
-#
-# Sukces > 50/100 @h=1000 Z LIMITAMI. Ponizej ~20 % po 4M = zadanie w tej
-# obwiedni wymaga zmiany STRUKTURALNEJ, a nie dluzszego treningu. Pierwszy
-# kandydat: obnizenie `output_max` obrotu w OSC z 0.5 rad — skoro nadgarstek
-# przekracza limit w 47 % krokow, polityka jest zachecana do zadan, ktorych
-# nigdy nie dostanie. To zmiana przestrzeni akcji, nie nagrody.
-#
-# NIE oceniac kolizyjnosci na tym etapie — collision_cost 0.5 jest celowo niski,
-# kolizyjnosc zbija dopiero etap 2.
-#
-# URUCHOMIENIE (bez --resume!):
-#   python training/train_board.py \
-#       --config training/configs/ppo_board_6dof_hwlim_s1.yaml
+# 6DOF scratch with firmware velocity limits, curriculum stage 1 (docs 6.31).
+# From scratch: free gripper, no finger gate, collision 0.5, no action-rate penalty,
+# log_std_max from the start. Criterion: > 50/100 @h=1000 with limits.
+# Result: 0/40, zero presses (trained under the leaky limit).
+#   python training/train_board.py --config training/configs/ppo_board_6dof_hwlim_s1.yaml
 
 algorithm: PPO
 policy: MlpPolicy
 
-learning_rate: 3.0e-4         # jak `depress`; to nauka od zera, nie przesuniecie
+learning_rate: 3.0e-4
 n_steps: 2048
 n_envs: 8
 batch_size: 64
@@ -62,42 +25,34 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward ETAPU 1 — dokladnie jak `ppo_board_6dof_depress.yaml`
-force_gripper_closed: false   # KLUCZOWE — swoboda chwytaka na etapie nauki
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5           # celowo NISKI; zaciska etap 2
-action_rate_cost: 0.0         # celowo ZERO; zaciska etap 2
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.012
-base_x_offset: -0.1
+force_gripper_closed: false     # gripper action overridden to closed
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.012         # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 8_000_000
-horizon: 1000
-random_order: true
+total_timesteps: 8_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Obwiednia sprzetowa OD PIERWSZEGO KROKU — o to chodzi w calym biegu.
-# 0.8727 rad/s = 50 st./s dla WSZYSTKICH 6 stawow, z
-# kortex_description/arms/gen3/6dof/config/joint_limits.yaml.
-# Model 15.91M przekracza to w 81.2 % krokow (j6 w 64.5 %).
-# Przyspieszen (joint_acc_limits) NIE nakladamy: wartosci 1.0/10.0 z tego
-# samego pliku moga byc limitami planera, nie firmware'u. Model przekracza je
-# w 88 % krokow — do zweryfikowania na sprzecie przed ewentualnym dolozeniem.
-joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727] # joint velocity limits [rad/s], enforced after each substep
 
-log_std_max: 0.0              # patrz naglowek; oryginalny `depress` tego nie mial
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 200000
 eval_freq: 200000

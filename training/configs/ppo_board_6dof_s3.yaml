@@ -1,56 +1,10 @@
-# 6DOF, ETAP s3: powtorka zaciesniania BEZ kolapsu (2026-08-05)
-#
-# Start: --resume logs/board_6dof/s2/best_model/best_model.zip
-#   = checkpoint 16.43M, SZCZYT biegu s2 (52/100, 8.8 kroku kolizji/ep),
-#   wziety PRZED zjazdem do 0 %. NIE brac ppo_board_final.zip z s2 (1/100).
-#
-# DLACZEGO STAD, A NIE Z depress_ft (80/100):
-#   depress_ft ma wolny chwytak i 41.6 kroku kolizji/ep. Przejscie na
-#   zamkniety chwytak kosztowalo w s2 ~32 pp i zajelo 2.3M z 6M krokow.
-#   Z budzetu 3M nie zostaloby nic na wlasciwa nauke. s2/best_model ten
-#   koszt JUZ zaplacil i ma docelowe zachowanie kontaktowe.
-#
-# CO SIE ZMIENIA vs s2 (dwie rzeczy, obie w env — docs 6.19):
-#   1. REWARD CLIPPING: depress_clip_buffer = 0.001. Glebokosc wchodzaca do
-#      shapingu obcieta na activation_depth + 1 mm = 13 mm. To usuwa PRZYCZYNE
-#      kolapsu z s2: wczesniej shaping placil za dowolnie gleboki docisk, a
-#      collision_cost karal wynikajacy z niego kontakt — po ~2.5M krokow
-#      wygrywala kara i polityka przestawala dotykac tablicy. Teraz powyzej
-#      13 mm docisk nie placi NIC, wiec konflikt znika.
-#      Czlon nadal TELESKOPUJE SIE (obcieta glebokosc = funkcja stanu), wiec
-#      pozostaje potencjalowy i nie zmienia polityki optymalnej.
-#   2. SCIANA JEST FIZYCZNA: wall_panel mial contype/conaffinity="0" (geom
-#      tylko wizualny), wiec ramie WCHODZILO ZA TABLICE — poza na sprzecie
-#      niemozliwa. Teraz kolizyjna i karana jak plyta tablicy.
-#
-# Hiperparametry PPO i CALY reward v2.3 — IDENTYCZNE jak s2. Swiadomie nie
-# zmieniamy nic wiecej: wygaszanie depress_shaping_k ani collision_cost = 2.0
-# (rozwazane w docs 9 pkt 11) sa juz NIEPOTRZEBNE, bo obciecie usuwa problem
-# u zrodla, a nie objawowo.
-#
-# UWAGA — PUNKT ODNIESIENIA. s2/best_model osiagnal 52/100 w srodowisku BEZ
-# sciany. Tutaj sciana jest fizyczna, wiec zadanie jest TRUDNIEJSZE i 52 %
-# NIE jest wlasciwym punktem odniesienia. Baseline mierzymy osobno
-# (compare_models.py na s2/best_model w nowym env) — docs 9 pkt 12.
-#
-# KRYTERIUM STOPU (poprawione po lekcji z s2, gdzie kryterium "czy polityka
-# sie podnosi" przepuscilo pozna degradacje):
-#   a) po 1.5M krokow sukces w oknie 1M ma byc >= baseline ze sciana;
-#   b) NIEZALEZNIE od tego sledzic trend PO szczycie — dwa kolejne okna 0.5M
-#      spadajace o >8 pp = przerwac i wziac checkpoint ze szczytu;
-#   c) czestosc epizodow katastroficznych (reward eval < -10 = zaciecie
-#      o tablice) nie ma rosnac.
-#
-# Budzet: 3M krokow DODATKOWYCH (16.43M -> ~19.4M). NIE 6M — w s2 szczyt
-# wypadl po 2.3M, a cala reszta biegu tylko psula model.
-# UWAGA: --timesteps liczy kroki DODATKOWE (SB3 przy reset_num_timesteps=
-# False dolicza je do num_timesteps z checkpointu).
-#
-# Uzycie:
-#   python training/train_board.py \
-#       --config training/configs/ppo_board_6dof_s3.yaml \
-#       --resume logs/board_6dof/s2/best_model/best_model.zip \
-#       --timesteps 3000000
+# 6DOF s3: repeat of the tightening with reward clipping and a physical wall (docs 6.19-6.20).
+# Start: s2 best_model 16.43M. Changes in env only: depress_clip_buffer 0.001, wall collidable.
+# Stop rule: two consecutive 0.5M windows dropping > 8 pp.
+# Result: stopped at 18.21M; 52/100 vs 51/100 baseline (p = 1), more collisions. Hypothesis refuted.
+#   python training/train_board.py --config training/configs/ppo_board_6dof_s3.yaml \
+#     --resume logs/board_6dof/s2/best_model/best_model.zip --timesteps 3000000
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -75,33 +29,30 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Pelny reward v2.3 — bez zmian vs s2
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0       # v2.5 ODRZUCONY
-contact_speed_cost: 0.0       # v2.5 ODRZUCONY
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-activation_depth: 0.012
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+activation_depth: 0.012         # cap travel counted as a press [m]
 
-# JEDYNA nowa zmienna rewardu (docs 6.19)
-depress_clip_buffer: 0.001    # shaping placi do 12+1 = 13 mm, glebiej zero
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
 
-# Geometria po audycie (docs 6.15)
-base_x_offset: -0.10
+base_x_offset: -0.10            # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 3_000_000
-horizon: 1000
+total_timesteps: 3_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board_6dof/s3

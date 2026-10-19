@@ -1,17 +1,7 @@
-# 6DOF: TRENING DOCELOWY NA SPRZET, OSTROZNA AKTUALIZACJA (2026-09-14, docs 6.34)
-# Jedyna zmiana wzgledem estop_hw: learning_rate 1e-4 -> 3e-5, target_kl 0.03 -> 0.01.
-# Powod: estop_hw na starcie konczyl czesc epizodow (ep_len 752), po ~150k stracil
-# (ep_len 1500, ep_rew -1.66) = zapominanie w trakcie fine-tune.
-# Fine-tune z ft_sc1_v23_long (15.91M) w obwiedni sprzetowej naraz:
-#  - limit predkosci stawow 0.8727 rad/s (firmware Gen3)
-#  - E-stop nieliniowy zatrzaskowy: 10 -> 20 N do 4 mm, spadek do 5 N,
-#    skok 6 mm, zatrzask = wcisniecie (decyzja uzytkownika: 20 N / 6 mm,
-#    z zapasem wzgledem przycisku z zawodow)
-# Reward v2.3 bez zmian. Poza startowa poza zakresem (supervisor).
-# URUCHOMIENIE:
+# As estop_hw with lr 1e-4 -> 3e-5 and target_kl 0.03 -> 0.01 (docs 6.34). INVALID RUN:
+# started from a false "forgetting" diagnosis (stale ep_info_buffer after --resume).
 #   python training/train_board.py --config training/configs/ppo_board_6dof_estop_hw_lr.yaml \
-#       --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip --timesteps 6000000
-
+#     --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip --timesteps 6000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -34,36 +24,34 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
-base_x_offset: -0.1
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 6000000
-horizon: 1500
-random_order: true
+total_timesteps: 6000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 1500                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Firmware Gen3, ros2_kortex joint_limits.yaml
-joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727] # joint velocity limits [rad/s], enforced after each substep
 
-log_std_max: 0.0
-target_kl: 0.01
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.01                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 100000
@@ -71,7 +59,7 @@ n_eval_episodes: 20
 log_dir: logs/board_6dof/estop_hw_lr
 tensorboard_log: logs/tensorboard
 
-button_estop_profile:
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 10.0
   f_peak: 20.0
   x_peak: 0.004

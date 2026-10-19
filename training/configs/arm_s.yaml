@@ -1,29 +1,9 @@
-# RAMIE KONTROLNE S — kampania chmurowa 2026-10-07 (docs 6.51)
-#
-# CZTERY RAMIONA PUSZCZANE ROWNOLEGLE, kazde +4M krokow z TEGO SAMEGO checkpointu
-# `spot_e6ab/checkpoints/ppo_board_86123552_steps.zip` (model na sprzet: n=100,
-# 100/100, 15.2 s, kolizje 7.0, misuse 0.0). Cel docelowy: 90 123 552 krokow.
-#
-# PO CO RAMIE KONTROLNE. Najwieksza dziura metodologiczna kampanii 6.43-6.47: poprawy
-# nie dawalo sie PRZYPISAC, bo kazde ulepszenie bylo jednoczesnie dodatkowymi milionami
-# krokow. W 6.46 kolizje spadly 20.9 -> 8.6 (p=0.047), ale bieg "te same 4M bez kary"
-# nigdy nie powstal, wiec do dzis nie wiadomo, czy zadzialala kara, czy sam trening.
-# Ramie K jest dokladnie tym brakujacym biegiem dla calej czworki.
-#
-# RAMIE S (SCALE) — poprawka WIERNOSCI, nie ulepszenie. Nasz ogranicznik przyspieszen
-# przycinal NIEZALEZNIE na kazdym stawie, co zmienia wypadkowy kierunek ruchu. Firmware
-# Gen3 w trybie twist (instrukcja R07) skaluje caly wektor PROPORCJONALNIE, zachowujac
-# kierunek. Pomiar 6.50 (e6ab, n=40, pary): sukcesy 40/40 w obu, czas bez zmian
-# (p=0.83), ale kolizje 5.2 -> 11.9 sr. i 5.0 -> 6.5 med., p=0.033. Polityka uczona
-# na `clip` nauczyla sie korygowac ZBACZANIE; na sprzecie dostanie OPOZNIENIE.
-# Pytanie: czy trening w semantyce docelowej odzyska te kolizje.
-#
-# ZMIENIONE WOBEC e6ab: joint_acc_limit_mode: clip -> scale
-#
-# URUCHOMIENIE (lokalnie albo w chmurze przez cloud/run_arm.sh):
-#   python training/train_board.py --config training/configs/arm_S.yaml \
-#       --resume logs/board_6dof/spot_e6ab/checkpoints/ppo_board_86123552_steps.zip \
-#       --timesteps 4000000
+# Arm S: acceleration limit in firmware semantics. Cloud campaign (docs 6.51): four arms, +4M each from the same checkpoint
+# spot_e6ab 86.12M (target 90 123 552), one change per arm, compared on paired seeds.
+# Change vs e6ab: joint_acc_limit_mode clip -> scale (proportional, direction kept, as Gen3 twist).
+# Result: collisions 14.91 -> 6.59 vs control K (p = 0.0001), 98/100.
+#   python training/train_board.py --config training/configs/arm_s.yaml \
+#     --resume logs/board_6dof/spot_e6ab/checkpoints/ppo_board_86123552_steps.zip --timesteps 4000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -46,69 +26,47 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — NIETKNIETY poza kara za kontakt ze Spotem (ponizej).
-# Nowe w tym biegu: scena ma bryle korpusu i przednia kamere.
-init_qpos: [0.0, 1.4692, -2.2410, 3.1403, -2.0200, 3.1416]   # j1 = 0, symetryczna
-spot_body: true
-spot_front_cam: true
-# 0.13, NIE 5.0 jak tablica: przy zmierzonych 446 krokach kontaktu na epizod
-# kara wyniesie 446 x 0.13 / 225 = 0.26, czyli ~26 % nagrody zadania. Przy 5.0
-# byloby -9.9 i polityka natychmiast nauczylaby sie stac.
-spot_collision_cost: 5.0   # ZROWNANE z collision_cost tablicy
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.3          # z etapu 3 (kurikulum 0.02 -> 0.3 dobieglo konca)
-# Kara za zbyt szybki dojazd (docs 6.45). tau = czas, w ktorym ramie ma sie
-# zatrzymac: v_dop = dystans / tau. Koszt 50 wyskalowany pomiarem (16 % nagrody).
-approach_speed_cost: 0.0   # 6.45 nie dal nic
-approach_brake_time: 0.30
-# action_rate_cost_start USUNIETE: kurikulum dobieglo konca w etapie 3,
-# kara zostaje na stalej wartosci docelowej 0.3
-action_rate_anneal_steps: 2000000
-# Staly punkt odniesienia kurikulum (frac = 0). BEZ TEGO wznowienie z 53.42M
-# zaczeloby kare od nowa od 0.02 — ta sama pulapka co przy JointVelLimitCurriculum
-# (docs 6.32). Przy 53.42M frac = (53423552-50223552)/2M > 1, wiec kara = 0.3 od razu.
-action_rate_anneal_origin: 50223552
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
-base_x_offset: -0.34   # Spot 24 cm dalej (docs 6.42)
+init_qpos: [0.0, 1.4692, -2.2410, 3.1403, -2.0200, 3.1416] # start pose [rad] (docs 6.42)
+spot_body: true                 # Spot body as an obstacle (docs 6.42)
+spot_front_cam: true            # front camera bar as an obstacle
+spot_collision_cost: 5.0        # per-step Spot-body contact penalty
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.3           # penalty on ||a_t - a_{t-1}||^2
+approach_speed_cost: 0.0        # approach-speed penalty, 0 = off (docs 6.45)
+approach_brake_time: 0.30       # allowed approach speed = distance / this [s]
+action_rate_anneal_steps: 2000000 # action-rate curriculum length [steps]
+action_rate_anneal_origin: 50223552 # fixed curriculum origin step, needed for --resume
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.34            # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 4000000
-horizon: 2000
-random_order: true
+total_timesteps: 4000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Instrukcja Gen3 R07, tab. 46 (limity ogolne); tryb twist = skalowanie proporcjonalne
-joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22]
-# Instrukcja Gen3 R07 tab. 48 — TWARDE limity przyspieszen, 6 DoF. NIE 1.0 z tab. 49:
-# tamta dotyczy wylacznie angular joystick / joint trajectory, a nasz tor to twist.
-joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0]
-joint_acc_limit_mode: scale
-# Wariant A: kara za nadmiar ZADANIA (liniowa, ograniczona do 3x limitu — wersja
-# kwadratowa bez ograniczenia dawala -274 na epizod, bo mierzyla impulsy kontaktu)
-# i premia za zapas, ktora daje gradient TAM, GDZIE POLITYKA JEST ZGODNA.
-# Skalibrowane roznica nagrod: kara 0.1 -> ok. 0.27 nagrody, premia 0.2 -> ok. 0.12.
-# Premia CELOWO mniejsza od kary: jest naliczana za krok, wiec przy przewadze
-# premii polityka moglaby przedluzac epizody, zeby jej nazbierac.
-acc_demand_cost: 0.1
-acc_margin_bonus: 0.2
-# Wariant B dolozony: limit losowany per epizod, mnoznik bazy [0.6, 1.4]
-joint_acc_limits_noise: [0.6, 1.4]
+joint_vel_limits: [1.39, 1.39, 1.39, 1.22, 1.22, 1.22] # joint velocity limits [rad/s], enforced after each substep
+joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0] # joint acceleration limits [rad/s^2] (Gen3 R07 table 48)
+joint_acc_limit_mode: scale     # scale = firmware semantics; clip = per joint (docs 6.50)
+acc_demand_cost: 0.1            # penalty on demand above the limit (measured substep ripple, docs 6.48)
+acc_margin_bonus: 0.2           # bonus for margin below the limit (same caveat)
+joint_acc_limits_noise: [0.6, 1.4] # per-episode multiplier of the acceleration limits
 
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 200000
@@ -116,7 +74,7 @@ n_eval_episodes: 20
 log_dir: logs/board_6dof/arm_s
 tensorboard_log: logs/tensorboard
 
-button_estop_profile:
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 10.0
   f_peak: 20.0
   x_peak: 0.004
@@ -125,6 +83,6 @@ button_estop_profile:
   x_stroke: 0.006
   latch: true
 
-joint_vel_limit_mode: scale
-eef_twist_limits: [0.5, 0.8727]
-n_eval_envs: 2
+joint_vel_limit_mode: scale     # scale = proportional, direction kept (twist mode); clip = per joint
+eef_twist_limits: [0.5, 0.8727] # tool caps [m/s, rad/s] (Cartesian joystick mode)
+n_eval_envs: 2                  # parallel evaluation envs

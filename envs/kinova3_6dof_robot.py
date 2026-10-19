@@ -1,29 +1,11 @@
 """
-kinova3_6dof_robot.py
-=====================
-Rejestracja robota Kinova Gen3 6DOF w robosuite (runtime, bez kopiowania
-do site-packages). Robot na uczelni to Gen3 w wariancie 6DOF; stockowy
-"Kinova3" w robosuite to wariant 7DOF (inna kinematyka, o jeden staw
-mniej w obserwacjach proprio).
+Registers the Kinova Gen3 6DOF in robosuite at runtime (the stock "Kinova3" is 7DOF).
 
-Model MJCF + meshe: my_assets/robots/kinova3_6dof/ — zaadaptowane z
-https://github.com/goldengeko/robosuite_training_examples (inercje i limity
-momentow zgodne z oficjalnym opisem Kortex: duze aktuatory 39 Nm, male 9 Nm).
-
-Zmiany wzgledem klasy z tego repo (parytet ze srodowiskiem uzywanym
-dotad z 7DOF "Kinova3"):
-  - default_base: RethinkMount zamiast SpotFloating (baze Spota symulujemy
-    sztywnym montazem na KINOVA_BASE_Z, jak dotychczas),
-  - default_gripper: Robotiq85Gripper zamiast Robotiq140 (taki jest na
-    uczelnianym Gen3 i taki byl trenowany),
-  - default_controller_config: default_kinova3 (OSC_POSE; skalarne gainy,
-    dzialaja dla 6 stawow) — i tak zawsze podajemy jawnie composite BASIC.
-
-Wystarczy zaimportowac ten modul PRZED suite.make(robots="Kinova3_6DOF") —
-metaklasa RobotModelMeta rejestruje klase po nazwie, a dekorator
-register_robot_class dopisuje mapowanie na FixedBaseRobot. Import jest
-w envs/__init__.py, wiec kazdy skrypt importujacy envs (oraz workery
-SubprocVecEnv) ma robota zarejestrowanego automatycznie.
+MJCF + meshes: my_assets/robots/kinova3_6dof/, adapted from
+https://github.com/goldengeko/robosuite_training_examples (Kortex inertias/torques).
+Changes: RethinkMount base (Spot simulated as a rigid mount at KINOVA_BASE_Z),
+Robotiq85 gripper (as on the lab Gen3), default_kinova3 controller.
+Import before suite.make(robots="Kinova3_6DOF"); envs/__init__.py does it.
 """
 import os
 
@@ -40,7 +22,7 @@ _ASSETS_DIR = os.path.join(
 
 @register_robot_class("FixedBaseRobot")
 class Kinova3_6DOF(ManipulatorModel):
-    """Kinova Gen3 6DOF (wariant uczelniany; stockowy Kinova3 = 7DOF)."""
+    """Kinova Gen3 6DOF (lab variant)."""
 
     arms = ["right"]
 
@@ -61,10 +43,8 @@ class Kinova3_6DOF(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        # Odpowiednik zlozonej pozy stockowego 7DOF (eef ~[0.43, 0, 1.61]).
-        # UWAGA: w 6DOF stawy pochylu to 2/3/5 (w 7DOF: 2/4/6) — init_qpos
-        # z repo goldengeko byl skopiowany z 7DOF bez remapu i dawal ramie
-        # wyprostowane w gore (eef z=2.67, poza zasiegiem tablicy).
+        # Equivalent of the stock 7DOF folded pose (eef ~[0.43, 0, 1.61]). Pitch joints
+        # are 2/3/5 here (2/4/6 in 7DOF); the goldengeko init_qpos was not remapped.
         return np.array([0.000, 0.650, -1.890, 0.000, -0.600, -np.pi / 2])
 
     @property

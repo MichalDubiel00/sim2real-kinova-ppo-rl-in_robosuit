@@ -1,9 +1,5 @@
-# 6DOF ETAP D: SKALA TRANSLACJI 0.02 m + OBROTU 0.1 rad + LIMIT 0.8727 + E-STOP 20 N (2026-09-15, docs 6.36)
-# Obwiednia sprzetowa. Start z modelu KONCOWEGO C1 (rot01_nolim/ppo_board_final.zip), nie z best_model
-# (best_model przy 0 sukcesow ewaluacji to szum — 6.35). Jedyna zmienna wzgledem C1 w ewaluacji:
-# osc_pos_output_max 0.05 -> 0.02 (+ limit w treningu, jesli etap bezposredni).
-
-
+# 6DOF stage D2: OSC translation 0.02 m + rotation 0.1 rad + limit 0.8727 + E-stop 20 N
+# (docs 6.36). Start: final model of D1. NOT RUN (D1 broke the task).
 
 algorithm: PPO
 policy: MlpPolicy
@@ -26,36 +22,34 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — NIETKNIETY. Zmienna niezalezna to wylacznie joint_vel_limits.
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.0059   # = zatrzask przy pelnym skoku 6 mm
-base_x_offset: -0.1
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 4000000
-horizon: 2000
-random_order: true
+total_timesteps: 4000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# Firmware Gen3, ros2_kortex joint_limits.yaml
-joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727]
+joint_vel_limits: [0.8727, 0.8727, 0.8727, 0.8727, 0.8727, 0.8727] # joint velocity limits [rad/s], enforced after each substep
 
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 100000
@@ -63,7 +57,7 @@ n_eval_episodes: 20
 log_dir: logs/board_6dof/pos002_hw
 tensorboard_log: logs/tensorboard
 
-button_estop_profile:
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
   f_start: 10.0
   f_peak: 20.0
   x_peak: 0.004
@@ -72,5 +66,5 @@ button_estop_profile:
   x_stroke: 0.006
   latch: true
 
-osc_pos_output_max: 0.02
-osc_rot_output_max: 0.1
+osc_pos_output_max: 0.02        # OSC translation per action unit [m/step], default 0.05
+osc_rot_output_max: 0.1         # OSC rotation per action unit [rad/step], default 0.5

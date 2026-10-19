@@ -11,6 +11,32 @@ Wartości w kolumnie „scena" wyciągnięte wprost z configów, nie z pamięci.
 
 ## MODEL NA SPRZĘT
 
+### `arm_d/checkpoints/ppo_board_98123552_steps.zip`
+- config `training/configs/arm_d.yaml` = `arm_sb` + 8M z martwym czasem
+  `action_delay_steps: [0, 2]` losowanym per epizod; h=2000, n=100, ziarno 1234,
+  tryb `scale` (docs 6.55)
+- **d=0: 98/100, kolizje 3.46 (mediana 0.0) | d=1: 99/100, kolizje 4.90 |
+  d=2: 98/100, kolizje 18.74** (d = opóźnienie akcji w krokach po 50 ms)
+- scena **identyczna jak `arm_sb` i e6ab** (patrz niżej); jedyna różnica w ocenie
+  to flaga `--action-delay`
+- kopia: `gs://sim2real_robosuite/arms/arm_d/` i `backup/decyzyjne/`
+
+```bash
+POZA="0.0,1.4692,-2.2410,3.1403,-2.0200,3.1416"
+python training/compare_models.py "arm_d=logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip" \
+  --robot Kinova3_6DOF --episodes 100 --seed 1234 --horizon 2000 \
+  --kinova-limits --acc-limits --acc-mode scale --action-delay 0 \
+  --estop-config training/configs/ppo_board_6dof_estop_hw.yaml \
+  --spot-body --spot-front-cam --base-x-offset=-0.34 --init-qpos="$POZA"
+```
+
+**Rezerwa: `arm_sb/checkpoints/ppo_board_90123552_steps.zip`** — d=0: 100/100,
+kolizje 6.98; d=2: 93/100, kolizje 30.68 (n=100, h=2000, scale). Wraca tylko,
+jeśli martwy czas zmierzony na sprzęcie w zegarze ściennym jest trwale < 50 ms
+bez ogona (docs 6.55).
+
+## Poprzedni model na sprzęt (do 2026-10-09)
+
 ### `spot_e6ab/checkpoints/ppo_board_86123552_steps.zip`
 - config `ppo_board_6dof_spot_e6ab.yaml`, h=2000, n=100
 - **100/100 [96.3–100 %], 15.2 s, kolizje 7.0 (mediana 6), misuse 0.0,
@@ -33,7 +59,7 @@ python training/compare_models.py "e6ab=logs/board_6dof/spot_e6ab/checkpoints/pp
 
 ## Poprzednie modele — każdy w INNEJ scenie
 
-Wolno porównywać tylko w obrębie jednej scenY. Zestawianie liczb między wierszami
+Wolno porównywać tylko w obrębie jednej sceny. Zestawianie liczb między wierszami
 tej tabeli jest błędem (popełnionym już dwa razy, docs 6.42 i 6.44).
 
 | model | scena | wynik |
@@ -54,7 +80,7 @@ porównywalny z żadnym wierszem powyżej żadną flagą — służy tylko jako 
 
 ## Co jest w kopii na buckecie
 
-- `backup/decyzyjne/` — sześć modeli z tego manifestu
+- `backup/decyzyjne/` — modele z tego manifestu (arm_d i arm_sb dodane 2026-10-15)
 - `backup/best_model/` i `backup/final/` — po jednym na bieg (45 + 29 plików)
 - `backup/eval/` — CSV-ki z ewaluacji (surowe dane za liczbami w dokumentacji)
 - `backup/tensorboard/` — krzywe treningowe

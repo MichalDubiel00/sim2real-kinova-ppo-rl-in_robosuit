@@ -6,17 +6,19 @@ __pycache__/
 .venv/
 venv/
 
-# --- Artefakty treningu (duze, odtwarzalne; archiwa runow trzymamy poza gitem) ---
+
 logs/
+
+# --- Files removed from the repo but kept locally (legacy code, unused assets) ---
+archive/
 
 # --- MuJoCo / robosuite ---
 MUJOCO_LOG.TXT
 
-# --- Nagrania i obrazy z watch_board / renderow ---
 *.mp4
 *.gif
 
-# --- IDE / edytory ---
+# --- IDE  ---
 .vscode/
 .idea/
 *.swp
@@ -26,5 +28,4 @@ MUJOCO_LOG.TXT
 core
 core.*
 
-# --- Claude Code (ustawienia lokalne sesji) ---
 .claude/settings.local.json

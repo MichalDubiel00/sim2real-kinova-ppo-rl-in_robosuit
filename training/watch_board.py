@@ -1,25 +1,13 @@
 """
-Wizualizacja ButtonBoard-v0
-===========================
-Uzycie:
-    python training/watch_board.py                        # okno na zywo, auto-model
-    python training/watch_board.py --model logs/board/checkpoints/ppo_board_500000_steps.zip
-    python training/watch_board.py --random               # losowe akcje (bez modelu)
-    python training/watch_board.py --record out.mp4       # bez okna, zapis wideo (dziala tez przez SSH)
-    python training/watch_board.py --episodes 5
+ButtonBoard-v0 viewer / recorder.
+    python training/watch_board.py                        # live window, auto model
+    python training/watch_board.py --random               # random actions
+    python training/watch_board.py --record out.mp4       # offscreen video (works over SSH)
 
-Nagranie modelu na sprzet w OBWIEDNI SPRZETOWEJ (te same warunki co ewaluacja
-n=100 z docs 6.40 — bez tych flag wideo pokazuje INNE zadanie):
-    python training/watch_board.py --record film.mp4 \
-        --model logs/board_6dof/kinova_ft_lr2/checkpoints/ppo_board_28023552_steps.zip \
+For hardware-envelope recordings pass the same flags as the evaluation, e.g.:
+    python training/watch_board.py --record film.mp4 --model <ckpt.zip> \
         --robot Kinova3_6DOF --horizon 2000 --kinova-limits \
-        --estop-config training/configs/ppo_board_6dof_estop_hw.yaml \
-        --seeds 1262,1253,1258 --fps 20 --width 1280 --height 720
-
-UWAGA: import stable_baselines3 ciagnie przez tensorboard TensorFlow,
-a TF w tym srodowisku psuje pozniejszy lazy-import torch._dynamo
-(segfault w PPO.load przy tworzeniu optymalizatora Adam). TF nie jest
-do niczego potrzebny, wiec blokujemy jego import ponizej.
+        --estop-config training/configs/ppo_board_6dof_estop_hw.yaml --seeds 1262,1253
 """
 
 import argparse
@@ -28,7 +16,7 @@ import os
 import re
 import sys
 
-sys.modules["tensorflow"] = None  # blokada: tensorboard uzyje wlasnego stuba
+sys.modules["tensorflow"] = None  # tensorboard falls back to its own stub (docs 7.6)
 
 import numpy as np
 
@@ -43,7 +31,7 @@ def flatten_obs(obs_dict):
 
 
 def find_model():
-    """Najpierw best_model, potem checkpoint z najwieksza liczba krokow."""
+    """best_model first, else the checkpoint with the most steps."""
     best = "logs/board/best_model/best_model.zip"
     if os.path.exists(best):
         return best
@@ -57,72 +45,80 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--random", action="store_true",
-                        help="losowe akcje zamiast modelu")
-    parser.add_argument("--record", type=str, default=None, metavar="PLIK.mp4",
-                        help="zapis wideo offscreen zamiast okna (dziala bez ekranu)")
+                        help="random actions instead of a model")
+    parser.add_argument("--record", type=str, default=None, metavar="FILE.mp4",
+                        help="record offscreen video instead of a window (works headless)")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--camera", type=str, default="board_view")
     parser.add_argument("--robot", type=str, default="Kinova3",
-                        help="Kinova3 (7DOF, stock) albo Kinova3_6DOF "
-                             "(uczelniany; modele 7DOF NIE dzialaja — inny "
-                             "wymiar obserwacji)")
+                        help="Kinova3 (7DOF, stock) or Kinova3_6DOF "
+                             "(lab variant; 7DOF models do NOT work - different "
+                             "observation size)")
     parser.add_argument("--activation-depth", type=float, default=None,
-                        help="prog wcisniecia [m]; domyslnie 0.012 (7DOF), "
-                             "modele 6DOF trenowane na 0.010")
+                        help="press threshold [m]; default 0.012 (7DOF), "
+                             "6DOF models were trained at 0.010")
     parser.add_argument("--horizon", type=int, default=1000,
-                        help="dlugosc epizodu; modele 6DOF etapu 1 trenowane "
-                             "na 2000")
+                        help="episode length; stage-1 6DOF models were trained "
+                             "at 2000")
     parser.add_argument("--free-gripper", action="store_true",
-                        help="chwytak sterowany przez polityke "
-                             "(force_gripper_closed=False); musi byc zgodne "
-                             "z trybem treningu modelu — patrz docs 6.15")
+                        help="gripper controlled by the policy "
+                             "(force_gripper_closed=False); must match "
+                             "the model's training mode - see docs 6.15")
     parser.add_argument("--seed", type=int, default=None,
-                        help="seed bazowy epizodow (konwencja jak w "
-                             "compare_models.py: epizod k dostaje seed+k); "
-                             "pozwala odtworzyc konkretny epizod z ewaluacji")
+                        help="base seed (same convention as "
+                             "compare_models.py: episode k gets seed+k); "
+                             "lets you replay a specific evaluation episode")
     parser.add_argument("--seeds", type=str, default=None,
-                        help="lista seedow po przecinku (np. 1262,1253,1258) "
-                             "zamiast --seed/--episodes; nagrywa dokladnie te "
-                             "epizody, w tej kolejnosci")
-    # --- obwiednia sprzetowa: te same flagi co compare_models.py ---
+                        help="comma-separated seeds (e.g. 1262,1253,1258) "
+                             "instead of --seed/--episodes; records exactly these "
+                             "episodes, in this order")
+    # --- hardware envelope: same flags as compare_models.py ---
     parser.add_argument("--kinova-limits", action="store_true",
-                        help="limity wg instrukcji Gen3 R07: stawy "
-                             "[1.39 x3, 1.22 x3] w trybie 'scale' + limity "
+                        help="limits per Gen3 R07 manual: joints "
+                             "[1.39 x3, 1.22 x3] in 'scale' mode + limits "
                              "twist (0.5 m/s, 0.8727 rad/s)")
     parser.add_argument("--hw-limits", action="store_true",
-                        help="limit 0.8727 rad/s na kazdy staw, tryb 'clip' "
+                        help="0.8727 rad/s limit on every joint, 'clip' mode "
                              "(ros2_kortex joint_limits.yaml)")
     parser.add_argument("--estop", action="store_true",
-                        help="profil E-stopu ESTOP_PROFILE_EXAMPLE")
+                        help="E-stop profile ESTOP_PROFILE_EXAMPLE")
     parser.add_argument("--estop-config", type=str, default=None,
-                        help="YAML z kluczem button_estop_profile (i opcjonalnie "
+                        help="YAML with a button_estop_profile key (and optionally "
                              "activation_depth), np. configs/ppo_board_6dof_estop_hw.yaml")
     parser.add_argument("--button-stiffness", type=float, default=None,
-                        help="sztywnosc przycisku [N/m]; None = model domyslny")
+                        help="button stiffness [N/m]; None = default model")
     parser.add_argument("--pos-max", type=float, default=None,
-                        help="output_max translacji OSC [m/krok]")
+                        help="OSC translation output_max [m/step]")
     parser.add_argument("--rot-max", type=float, default=None,
-                        help="output_max obrotu OSC [rad/krok]")
+                        help="OSC rotation output_max [rad/step]")
     parser.add_argument("--acc-limits", action="store_true",
-                        help="twarde limity przyspieszen Gen3 wg instrukcji R07 tab. 48: "
-                             "[5.2 x3, 10.0 x3] rad/s^2 (docs 6.44). BEZ tego nagranie pokazuje "
-                             "ruchy, ktorych prawdziwy robot NIE WYKONA")
+                        help="hard Gen3 acceleration limits, R07 manual table 48: "
+                             "[5.2 x3, 10.0 x3] rad/s^2 (docs 6.44). WITHOUT it the video shows "
+                             "motions the real robot will NOT perform")
+    parser.add_argument("--acc-mode", choices=["clip", "scale"], default="clip",
+                        help="how to clip accelerations: clip = per joint, scale = "
+                             "proportional (firmware twist mode; docs 6.50). "
+                             "arm_* models were TRAINED and EVALUATED with scale - recording with clip "
+                             "shows a DIFFERENT task (collisions 7.0 vs 14.7)")
+    parser.add_argument("--action-delay", type=int, default=None, metavar="K",
+                        help="loop dead time: the command from step t acts at t+K (docs 6.52). "
+                             "1 step = 50 ms. arm_d was trained with random [0,2]")
     parser.add_argument("--base-x-offset", type=float, default=None, metavar="M",
-                        help="odleglosc postoju Spota (domyslne env -0.10; biegi od 6.42: -0.34)")
+                        help="Spot stand-off (env default -0.10; runs since 6.42: -0.34)")
     parser.add_argument("--init-qpos", type=str, default=None, metavar="q1,..,q6",
-                        help="poza startowa, 6 katow po przecinku")
+                        help="start pose, 6 comma-separated angles")
     parser.add_argument("--spot-body", action="store_true",
-                        help="bryla korpusu Spota pod ramieniem (zmierzona z Webotsa, docs 6.41)")
+                        help="Spot body under the arm (measured in Webots, docs 6.41)")
     parser.add_argument("--spot-front-cam", action="store_true",
-                        help="przednia kamera Spota (obrys Kinecta jako bufor)")
+                        help="front Spot camera (Kinect outline as a buffer)")
     parser.add_argument("--no-finger-gate", action="store_true",
-                        help="wylacza wymog kontaktu palcow przy wcisnieciu")
-    # --- parametry nagrania ---
+                        help="disables the finger-contact requirement for a press")
+    # --- recording ---
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=10,
-                        help="klatek/s w pliku; przy control_freq 20 Hz wartosc "
-                             "20 daje czas rzeczywisty, 10 = co druga klatka")
+                        help="frames/s in the file; at control_freq 20 Hz "
+                             "20 gives real time, 10 = every other frame")
     return parser.parse_args()
 
 
@@ -133,29 +129,28 @@ def main():
     if not args.random:
         model_path = args.model or find_model()
         if model_path is None:
-            print("Brak modelu (jeszcze zaden checkpoint nie istnieje) — losowe akcje.")
+            print("No model (no checkpoint exists yet) - random actions.")
 
     if args.record:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
-    # 1) Najpierw srodowisko + viewer (patrz UWAGA w naglowku)
+    # 1) Env + viewer first, before torch
     import robosuite as suite
     from envs.button_board import ButtonBoardEnv
     from envs.controller_scale import with_osc_output_max
-    # stale limitow trzymane w JEDNYM miejscu (compare_models.py), zeby wideo
-    # i pomiar nie rozjechaly sie po kolejnej korekcie limitow
+    # limit constants live in compare_models.py only
     from compare_models import HW_JOINT_VEL, KINOVA_JOINT_VEL, KINOVA_TWIST
 
     estop_prof = ButtonBoardEnv.ESTOP_PROFILE_EXAMPLE if args.estop else None
     if args.estop_config:
         if args.estop:
-            raise SystemExit("--estop i --estop-config wykluczaja sie")
+            raise SystemExit("--estop and --estop-config are mutually exclusive")
         import yaml
         _c = yaml.safe_load(open(args.estop_config))
         estop_prof = _c["button_estop_profile"]
         if args.activation_depth is None:
             args.activation_depth = _c.get("activation_depth")
-        print(f"[estop] z {args.estop_config}: {estop_prof}, prog {args.activation_depth}")
+        print(f"[estop] from {args.estop_config}: {estop_prof}, threshold {args.activation_depth}")
 
     controller_cfg = with_osc_output_max(
         suite.load_composite_controller_config(
@@ -171,8 +166,7 @@ def main():
         use_camera_obs=False,
         horizon=args.horizon,
         random_order=True,
-        # board_pos_noise / base_z_noise / percep_* CELOWO nie podawane -
-        # biora domyslne z ButtonBoardEnv (patrz compare_models.py).
+        # noise params deliberately omitted: env defaults, as in compare_models.py
         activation_depth=args.activation_depth,
         force_gripper_closed=not args.free_gripper,
         finger_press_gate=not args.no_finger_gate,
@@ -183,6 +177,8 @@ def main():
         **({"base_x_offset": args.base_x_offset} if args.base_x_offset is not None else {}),
         init_qpos=([float(x) for x in args.init_qpos.split(",")] if args.init_qpos else None),
         joint_acc_limits=([5.2, 5.2, 5.2, 10.0, 10.0, 10.0] if args.acc_limits else None),
+        joint_acc_limit_mode=args.acc_mode,
+        action_delay_steps=args.action_delay,
         spot_body=args.spot_body,
         spot_front_cam=args.spot_front_cam,
         button_stiffness=args.button_stiffness,
@@ -190,13 +186,13 @@ def main():
     )
     env.reset()
     if not args.record:
-        env.render()  # otworz okno zanim zaladujemy torcha
+        env.render()  # open the window before loading torch
 
-    # 2) Dopiero teraz stable_baselines3 / torch
+    # 2) Only now stable_baselines3 / torch
     model = None
     if model_path is not None:
         from stable_baselines3 import PPO
-        print(f"Laduje model: {model_path}")
+        print(f"Loading model: {model_path}")
         model = PPO.load(model_path, device="cpu")
 
     if args.seeds:
@@ -208,12 +204,18 @@ def main():
 
     frame_every = max(1, round(20 / max(args.fps, 1)))  # control_freq 20 Hz
 
-    frames = []
+    # Frames go straight to disk (keeping them in memory OOMed at 11 GB, 2026-10-10).
+    tmp_dir = n_frames = None
+    if args.record:
+        import subprocess
+        from PIL import Image
+        # Per-process directory: parallel recordings overwrote each other's frames.
+        tmp_dir = f"/tmp/watch_board_frames_{os.getpid()}"
+        os.makedirs(tmp_dir, exist_ok=True)
+        n_frames = 0
     for ep, seed in enumerate(seeds):
         if seed is not None:
-            # ta sama konwencja parowania co compare_models.py: epizod o tym
-            # samym seedzie ma identyczne warunki, wiec mozna odtworzyc
-            # konkretny (np. udany) epizod z CSV ewaluacji
+            # same seeding as compare_models.py, so a CSV episode can be replayed
             np.random.seed(seed)
         obs = env.reset()
         total, done, t = 0.0, False, 0
@@ -227,26 +229,19 @@ def main():
             t += 1
             if args.record:
                 if t % frame_every == 0:
-                    frames.append(env.sim.render(
+                    Image.fromarray(env.sim.render(
                         camera_name=args.camera,
-                        width=args.width, height=args.height)[::-1])
+                        width=args.width, height=args.height)[::-1]
+                    ).save(f"{tmp_dir}/{n_frames:06d}.png")
+                    n_frames += 1
             else:
                 env.render()
-        print(f"Epizod {ep} (seed={seed}): krokow={t}, reward={total:.3f}, "
-              f"wcisniete={env._pressed}, sukces={env._check_success()}")
+        print(f"Episode {ep} (seed={seed}): steps={t}, reward={total:.3f}, "
+              f"pressed={env._pressed}, success={env._check_success()}")
 
     env.close()
 
-    if args.record and frames:
-        import subprocess
-        # Katalog UNIKALNY dla procesu — stala sciezka powodowala, ze
-        # rownolegle uruchomione nagrania nadpisywaly sobie klatki
-        # i ffmpeg sklejal film z kilku biegow (incydent 2026-09-07).
-        tmp_dir = f"/tmp/watch_board_frames_{os.getpid()}"
-        os.makedirs(tmp_dir, exist_ok=True)
-        from PIL import Image
-        for i, f in enumerate(frames):
-            Image.fromarray(f).save(f"{tmp_dir}/{i:06d}.png")
+    if args.record and n_frames:
         subprocess.run(
             ["ffmpeg", "-y", "-framerate", str(args.fps),
              "-i", f"{tmp_dir}/%06d.png",
@@ -255,7 +250,7 @@ def main():
         for p in glob.glob(f"{tmp_dir}/*.png"):
             os.remove(p)
         os.rmdir(tmp_dir)
-        print(f"Wideo zapisane: {args.record}")
+        print(f"Video saved: {args.record}")
 
 
 if __name__ == "__main__":

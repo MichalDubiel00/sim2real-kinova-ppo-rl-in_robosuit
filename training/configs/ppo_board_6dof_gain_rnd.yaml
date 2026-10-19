@@ -1,69 +1,10 @@
-# 6DOF: FINE-TUNE z RANDOMIZACJA WZMOCNIENIA MECHANIZMU (2026-09-11)
-#
-# Wznowienie z logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip
-# (15.91M, 76/100 @h=1500). Zmienna niezalezna tego biegu to WYLACZNIE
-# gain_noise_lin / gain_noise_rot. Reszta identyczna z ft_sc1_v23_long.
-#
-# --- DLACZEGO ---
-#
-# Warstwa B2 sim2sim (docs 6.28, 6.29) zmierzyla, ze ten sam wektor akcji daje
-# w Webots ULAMEK ruchu, ktory daje w robosuite:
-#
-#   droga przez IK + JointTrajectory : 0.54-0.90x, ROZNE dla kazdej osi
-#   droga przez MoveIt Servo         : 0.32x translacja, 0.10x obrot
-#
-# Polityka wystawia akcje identyczne z robosuite (zweryfikowane co do 0.001),
-# wiec to nie jest blad mostu. To ROZBIEZNOSC MECHANIZMU. Sufit lezy
-# w JointTrajectoryController Webotsa, na ktory publikuja OBIE drogi.
-#
-# To nie jest "to samo, tylko wolniej" z dwoch powodow:
-#   1. obs[18:24] to PREDKOSCI STAWOW — przy 0.32x sa poza rozkladem treningu;
-#   2. spowolnienie jest ANIZOTROPOWE (0.32 vs 0.10), wiec zmienia sie KSZTALT
-#      trajektorii, nie tylko tempo. Wydluzenie horyzontu tego nie naprawi.
-#
-# --- DLACZEGO RANDOMIZACJA, A NIE DOPASOWANIE ---
-#
-# Mozna by zmierzyc wzmocnienie Webotsa i wstawic je na sztywno. Trzy powody,
-# zeby tego NIE robic:
-#   1. Zmierzone wzmocnienie zalezy od KONFIGURACJI ramienia, nie od osi —
-#      robosuite sam daje +Y 4.14 st./krok wobec -Y 3.30 przy identycznym
-#      module komendy (docs 6.28). Stala dopasowana w pozie home bedzie bledna
-#      gdzie indziej, a polityka przejezdza przez wiele konfiguracji.
-#   2. Webots to platforma WALIDACYJNA, nie cel. Prawdziwy Gen3 ma wlasne API
-#      kartezjanskie Kinovy i jeszcze inny mechanizm. Dopasowanie do Webotsa
-#      nie przeniesie sie na sprzet.
-#   3. Randomizacja daje polityke OBOJETNA na mechanizm, a to jedyna rzecz,
-#      ktora faktycznie zabieramy do laboratorium.
-#
-# --- ZAKRES ---
-#
-# [0.3, 1.2] na kazda z 6 osi, losowane OSOBNO i NA EPIZOD. Dolna granica
-# pokrywa zmierzone 0.32 (translacja przez Servo) z zapasem; gorna przekracza
-# 1.0, zeby polityka nie nauczyla sie, ze wzmocnienie jest zawsze mniejsze od
-# nominalnego. Osobne losowanie per os odwzorowuje zmierzona anizotropie.
-#
-# Kara za akcje liczy sie na akcji POLITYKI, nie na przeskalowanej
-# (ButtonBoardEnv.step -> self._raw_action). Inaczej randomizacja zmienialaby
-# reward i bieg miesza​lby dwie zmienne.
-#
-# --- KRYTERIUM ---
-#
-# PODWOJNE, oba trzeba zmierzyc przy h=1500:
-#   a) przy gain=1.0 skutecznosc ma zostac w okolicy 76/100 — inaczej
-#      zaplacilismy odpornoscia za jakosc;
-#   b) przy gain=0.5 i 0.32 ma wyraznie wzrosnac wobec modelu bazowego.
-# Sam wzrost (b) bez utrzymania (a) NIE jest sukcesem.
-#
-# RYZYKO: to zadanie jest TRUDNIEJSZE od bazowego (dochodzi 6 osi
-# randomizacji), wiec spadek przy gain=1.0 o kilka punktow jest oczekiwany.
-# Budzet 3M i checkpointy co 100k — liczy sie model ze SZCZYTU, nie koncowy
-# (sufit ~16M z docs 6.25 dotyczyl innego zadania, ale zwyczaj zostaje).
-#
-# URUCHOMIENIE:
-#   python training/train_board.py \
-#       --config training/configs/ppo_board_6dof_gain_rnd.yaml \
-#       --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip \
-#       --timesteps 3000000
+# 6DOF fine-tune with mechanism gain randomisation (docs 6.30).
+# Start: ft_sc1_v23_long 15.91M. Only change: gain_noise_lin/rot [0.3, 1.2], per axis, per episode
+# (motivated by the Webots execution gains 0.32 / 0.10). Action penalties use the policy's action.
+# Criterion (h=1500): keep ~76/100 at gain 1.0 AND gain at 0.5 / 0.32.
+# Result: negative. 24 -> 18/40 at gain 1.0, no gain at 0.5/0.32, collisions 9.4x up.
+#   python training/train_board.py --config training/configs/ppo_board_6dof_gain_rnd.yaml \
+#     --resume logs/board_6dof/sweep/ft_sc1_v23_long/ppo_board_final.zip --timesteps 3000000
 
 algorithm: PPO
 policy: MlpPolicy
@@ -86,38 +27,35 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Reward v2.3 — IDENTYCZNY jak ft_sc1_v23_long. Nietkniety celowo.
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-depress_clip_buffer: 0.001
-activation_depth: 0.012
-base_x_offset: -0.1
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.012         # cap travel counted as a press [m]
+base_x_offset: -0.1             # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 3000000
-horizon: 1000
-random_order: true
+total_timesteps: 3000000        # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
+random_order: true              # random target order per episode
 
-board_pos_noise: 0.06
-percep_pos_bias: 0.015
-percep_pos_noise: 0.005
-percep_axis_noise: 0.05
-base_z_noise: 0.03
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # per-episode arm base height noise [m]
 
-# JEDYNA zmienna niezalezna tego biegu:
-gain_noise_lin: [0.3, 1.2]
-gain_noise_rot: [0.3, 1.2]
+gain_noise_lin: [0.3, 1.2]      # per-episode, per-axis mechanism gain range (docs 6.30)
+gain_noise_rot: [0.3, 1.2]      # per-episode, per-axis mechanism gain range (docs 6.30)
 
-# LogStdClamp — bez niego kazdy bieg konczyl eksplozja log_std (docs 6.25)
-log_std_max: 0.0
-target_kl: 0.03
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
 
 checkpoint_freq: 100000
 eval_freq: 100000

@@ -1,62 +1,10 @@
-# 6DOF, ETAP ZACIESNIANIA: fine-tune do pelnego rewardu v2.3 (2026-08-04)
-#
-# Start: --resume logs/board_6dof/depress_ft/ppo_board_final.zip (80/100 przy
-# progu nominalnym 12 mm, docs 6.17). Cel: ten sam protokol, na ktorym
-# mierzony byl 7DOF v2.3 (90/100), czyli DOMYSLNA konfiguracja ButtonBoardEnv.
-#
-# CO SIE ZMIENIA vs depress_ft (4 rzeczy naraz — swiadomie, patrz nizej):
-#   force_gripper_closed  false -> true   (wymog sprzetowy: wciskamy czubkiem
-#                                          ZAMKNIETYCH palcow, nie nadgarstkiem
-#                                          ani przedramieniem — inaczej realny
-#                                          robot uderza kamera w tablice)
-#   finger_press_gate     false -> true   (wciecie liczy sie tylko, gdy palec
-#                                          jest na kapturku — odpowiednik
-#                                          detektora TCP u nadzorcy)
-#   collision_cost        0.5   -> 5.0    (v2.1+)
-#   action_rate_cost      0.0   -> 0.02   (v2.1+)
-#
-# CO ZOSTAJE BEZ ZMIAN (celowo):
-#   depress_shaping_k 400 — v2.3 u 7DOF mial 0, ale u 6DOF to wlasnie ten
-#   gradient przelamal schodkowy prog 12 mm (docs 6.17). Przy zamknietym
-#   chwytaku geometria kontaktu sie ZMIENIA (czubek palcow zamiast dowolnego
-#   ogniwa), wiec glebokosc trzeba przeuczyc — a shaping jest POTENCJALOWY
-#   i teleskopuje sie, wiec nie zmienia polityki optymalnej, tylko droge do
-#   niej. Wylaczenie go byloby piata zmiana naraz, i to najbardziej ryzykowna.
-#   activation_depth 0.012, base_x_offset -0.10, horizon 1000, PPO bez zmian.
-#
-# RYZYKO — POLICZONE, NIE HIPOTETYCZNE:
-#   Model startowy koliduje w 99/100 epizodow, srednio 41.6 kroku/ep (docs
-#   6.17). Przy collision_cost 5.0 to 41.6*5 = ~208 kary na epizod, wobec
-#   REWARD_NORM 225 (5*PRESS_BONUS + COMPLETE_BONUS). Innymi slowy kara
-#   kolizyjna startuje na poziomie CALEJ nagrody zadaniowej — dokladnie taki
-#   uklad zapadl sie u 7DOF w v2.2 (0/100, „polityka nauczyla sie unikac
-#   wszystkiego", docs 6.3). Roznica na nasza korzysc: v2.2 karal takze
-#   kontakt CHWYTAKA (finger_misuse_cost), a tu misuse = 0, wiec dotykanie
-#   kapturka palcem pozostaje darmowe — karany jest wylacznie kontakt RAMIENIA
-#   z tablica i uderzanie w niewlasciwe przyciski. To jest ta poprawka, ktora
-#   w v2.3 odblokowala 7DOF.
-#   Do tego dochodzi znany koszt samego zamkniecia chwytaka: A/B na modelu v4
-#   dal 82 % -> 50 % sukcesu (~32 pp) BEZ zadnych innych zmian.
-#   Realistyczne oczekiwanie na starcie fine-tune'u: sukces spada mocno
-#   (rzedu 80 -> 20-40/100) i musi sie odbudowac. To NIE jest powod do
-#   przerwania biegu w pierwszym 1M krokow.
-#
-# KRYTERIUM STOPU (zeby nie powtorzyc v2.2, gdzie plaskie plateau ciagnelo
-# sie 2M krokow): jesli po 2M krokach dodatkowych sukces eval nie wraca
-# powyzej ~25/100 ALBO kroki kolizji spadaja przy jednoczesnym spadku
-# wcisniec/ep do <1.0, to jest kolaps unikania — wtedy fallback: zlagodzic
-# collision_cost do 2.0 i wznowic z ostatniego sensownego checkpointu.
-#
-# Budzet: 6M krokow DODATKOWYCH (14.23M -> ~20.2M).
-# UWAGA: --timesteps liczy kroki DODATKOWE (SB3 przy reset_num_timesteps=False
-# dolicza je do num_timesteps z checkpointu), wiec total_timesteps ponizej
-# jest przy wznowieniu IGNOROWANY.
-#
-# Uzycie:
-#   python training/train_board.py \
-#       --config training/configs/ppo_board_6dof_s2.yaml \
-#       --resume logs/board_6dof/depress_ft/ppo_board_final.zip \
-#       --timesteps 6000000
+# 6DOF tightening to the full v2.3 reward (docs 6.18).
+# Start: depress_ft 14.23M (80/100). Changes: force_gripper_closed, finger_press_gate,
+# collision_cost 0.5 -> 5.0, action_rate_cost 0 -> 0.02; depth shaping kept.
+# Result: peak 52/100 @h=1000 at 16.43M (best_model, 8.8 collision steps), then collapse to 1/100.
+#   python training/train_board.py --config training/configs/ppo_board_6dof_s2.yaml \
+#     --resume logs/board_6dof/depress_ft/ppo_board_final.zip --timesteps 6000000
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -81,30 +29,28 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Pelny reward v2.3 (= domyslne ButtonBoardEnv) + shaping glebokosci
-force_gripper_closed: true
-finger_press_gate: true
-finger_misuse_cost: 0.0       # v2.5 ODRZUCONY — kara misuse zapadla polityke
-contact_speed_cost: 0.0       # v2.5 ODRZUCONY
-dense_align_coef: 0.05
-collision_cost: 5.0
-action_rate_cost: 0.02
-depress_shaping_k: 400.0
-activation_depth: 0.012
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.02          # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+activation_depth: 0.012         # cap travel counted as a press [m]
 
-# Geometria po audycie (docs 6.15)
-base_x_offset: -0.10
+base_x_offset: -0.10            # Spot stand-off: arm base shift toward the wall [m]
 
-total_timesteps: 6_000_000
-horizon: 1000
+total_timesteps: 6_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
 log_dir: logs/board_6dof/s2

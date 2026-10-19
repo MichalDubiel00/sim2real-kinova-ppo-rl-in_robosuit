@@ -1,6 +1,0 @@
-sc1_loose_clamp	scratch	-	SCRATCH etap 1: warunki v4like + shaping 400 + log_std<=0
-ft_sc1_v23	ft	logs/board_6dof/sweep/sc1_loose_clamp/best_model/best_model.zip	FT etap 2: sc1 -> pelne v2.3 + log_std<=0  [MODEL NA SPRZET]
-sc2_full_clamp	scratch	-	SCRATCH kontrolny: pelne v2.3 od kroku 0 + log_std<=0
-f1_clamp	ft	logs/board_6dof/s2/best_model/best_model.zip	FT z s2: ent_coef 0 + log_std<=0 + target_kl 0.03
-f2_clamp_tight	ft	logs/board_6dof/s2/best_model/best_model.zip	FT z s2: ent_coef 0 + log_std<=-0.7 (sigma<=0.5)
-f3_targetkl	ft	logs/board_6dof/s2/best_model/best_model.zip	FT z s2: target_kl 0.03 — kontrola, sigma nietknieta

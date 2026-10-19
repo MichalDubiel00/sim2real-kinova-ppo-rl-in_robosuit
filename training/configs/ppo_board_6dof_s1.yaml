@@ -1,10 +1,7 @@
-# Kurikulum 6DOF, ETAP 1: scratch w warunkach rewardu v2 (jak udany
-# scratch 7DOF "v4"): BEZ bramki palcowej, collision_cost 0.5,
-# action_rate_cost 0. Pierwsza proba (2026-07-29, 6M) biegla z karami
-# v2.1 (kolizja 5.0 + rate cost) i PADLA: 0 sukcesow, polityka nauczyla
-# sie omijac tablice (1 krok kolizji = -5/225 > caly shaping dolotu
-# ~10*0.7/225). Kary dokrecamy dopiero w etapie 2 (fine-tune).
-# Robot: Kinova3_6DOF (uczelniany wariant Gen3; obs 120, nie 128!).
+# 6DOF curriculum stage 1 (docs 6.8): scratch under reward-v2 conditions (no finger gate,
+# collision 0.5, no action-rate penalty). The first attempt with v2.1 penalties learned to avoid
+# the board. Robot Kinova3_6DOF (obs 120). Results invalidated by the geometry audit (docs 6.15).
+
 algorithm: PPO
 policy: MlpPolicy
 
@@ -29,40 +26,26 @@ policy_kwargs:
   net_arch: [256, 256]
   activation_fn: tanh
 
-robot: Kinova3_6DOF
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
 
-# Etap 1: reward v2-like — lagodna kolizja, bez kary za szarpanie,
-# bez bramki palcowej (kary v2.5 odrzucone na stale)
-finger_press_gate: false
-finger_misuse_cost: 0.0
-contact_speed_cost: 0.0
-dense_align_coef: 0.05
-collision_cost: 0.5
-action_rate_cost: 0.0
-# Pomoc w odkryciu docisku (od 3.9M; wczesniej 0): potential-based shaping
-# na glebokosci wcisniecia celu, k*(depr_t - depr_{t-1}). Pelny docisk
-# 12 mm = +4.8 (1/5 bonusu za wcisniecie); trzymanie placi 0, puszczenie
-# oddaje. Polityka @3.9M dojezdzala na 2-3 cm i wgniatala do ~5 mm, ale
-# przez 3.9M krokow nigdy nie trafila 12 mm — brak gradientu na osi
-# glebokosci (u 7DOF w luzniejszej kinematyce odkrycie przyszlo samo).
-depress_shaping_k: 400.0
-# Prog wcisniecia 10 mm (2/3 skoku; domyslne 12/15 mm jest na granicy
-# fizycznej wykonalnosci dla Robotiq85+grzybek w pozach 6DOF: celowy
-# wyrownany docisk opuszka ~7 mm, nauczona technika skosna ~11 mm.
-# Realna glebokosc aktywacji nieznana; na sprzecie wciskanie wykrywa
-# elektrycznie nadzorca — prog w sim to parametr projektowy zadania).
-activation_depth: 0.010
+finger_press_gate: false        # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 0.5             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.0           # penalty on ||a_t - a_{t-1}||^2
+depress_shaping_k: 400.0        # potential shaping on cap depression
+activation_depth: 0.010         # cap travel counted as a press [m]
 
-total_timesteps: 6_000_000
-horizon: 1000
+total_timesteps: 6_000_000      # ignored on --resume (--timesteps = additional steps)
+horizon: 1000                   # episode length [control steps at 20 Hz]
 
-random_order: true
-board_pos_noise: 0.05
-percep_pos_bias: 0.005
-percep_pos_noise: 0.002
-percep_axis_noise: 0.02
+random_order: true              # random target order per episode
+board_pos_noise: 0.05           # per-episode board offset [m]
+percep_pos_bias: 0.005          # per-episode perception bias [m]
+percep_pos_noise: 0.002         # per-step perception noise [m]
+percep_axis_noise: 0.02         # per-episode press-axis noise
 
 checkpoint_freq: 100_000
-# Osobny katalog — NIE nadpisujemy artefaktow 7DOF w logs/board!
 log_dir: logs/board_6dof/s1
 tensorboard_log: logs/tensorboard

@@ -24,7 +24,7 @@ class ButtonObject(MujocoXMLObject):
             name=name,
             joints=None,  # static object; spring joint is inside the body
             obj_type="all",
-            # False: XML ma wlasne geomy wizualne (zolta obudowa, czerwony grzybek);
-            # duplikaty kolizji renderowaly sie jako szare walce zaslaniajace je
+            # False: the XML has its own visual geoms; collision duplicates rendered
+            # as grey cylinders covering them
             duplicate_collision_geoms=False,
         )
