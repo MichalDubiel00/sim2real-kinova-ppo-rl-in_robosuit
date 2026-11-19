@@ -3,9 +3,10 @@
 # Contents come from git (`git ls-files`), not a hand-written list: the list missed
 # objects/ on 08.10. tar reads the working tree, so uncommitted fixes are included.
 set -euo pipefail
-BUCKET="${1:?uzycie: cloud/bundle.sh NAZWA_BUCKETA}"
+BUCKET="${1:?uzycie: cloud/bundle.sh NAZWA_BUCKETA [START_CHECKPOINT]}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-CKPT="logs/board_6dof/spot_e6ab/checkpoints/ppo_board_86123552_steps.zip"
+# Start checkpoint; its basename becomes the start-ckpt metadata (arm_g/arm_l: arm_d 98.12M).
+CKPT="${2:-logs/board_6dof/spot_e6ab/checkpoints/ppo_board_86123552_steps.zip}"
 TMP="$(mktemp -d)"
 
 cd "$REPO"
@@ -22,7 +23,7 @@ tar tzf "$TMP/kod.tar.gz" > "$TMP/spis"
 for m in envs/button_board.py envs/kinova3_6dof_robot.py \
          objects/button_object.py objects/custom_objects.py \
          my_assets/robots/kinova3_6dof/robot.xml my_assets/objects/xml/omniboard.xml \
-         my_assets/objects/meshes/Omniboard.stl \
+         my_assets/objects/meshes/Omniboard.stl my_assets/objects/xml/button_lab.xml \
          training/train_board.py cloud/run_arm.sh; do
   grep -qx "$m" "$TMP/spis" || { echo "INCOMPLETE BUNDLE: missing $m" >&2; exit 1; }
 done
@@ -39,6 +40,6 @@ done < <(git ls-files -s | awk '$1=="120000"{ $1=$2=$3=""; sub(/^ +/,""); print 
 echo "bundle size: $(du -h "$TMP/kod.tar.gz" | cut -f1), files: $(tar tzf "$TMP/kod.tar.gz" | wc -l)"
 
 gsutil cp "$TMP/kod.tar.gz" "gs://$BUCKET/kod.tar.gz"
-gsutil cp "$CKPT" "gs://$BUCKET/start/ppo_board_86123552_steps.zip"
+gsutil cp "$CKPT" "gs://$BUCKET/start/$(basename "$CKPT")"
 rm -rf "$TMP"
-echo "DONE. gs://$BUCKET/ contains: kod.tar.gz, start/ppo_board_86123552_steps.zip"
+echo "DONE. gs://$BUCKET/ contains: kod.tar.gz, start/$(basename "$CKPT")"

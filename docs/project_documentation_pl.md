@@ -7049,6 +7049,909 @@ Reakcja operatora (ok. 0.3–1 s, czyli 6–20 kroków) oznacza, że polityka pr
 napiera na zatrzaśnięty grzybek — stan, którego w treningu nie widziała. Opóźnienie reakcji da
 się odczytać z nagrania wideo zestawionego z CSV.
 
+### 6.64. Most na sterowniku `ros2_kortex` z atrapą sprzętu i podział kodu mostu (2026-10-23 – 2026-10-27)
+
+**Próba z `kortex_bringup` (`use_fake_hardware:=true`, `dof:=6`, `gripper:=robotiq_2f_85`).**
+Pakiety z apt (`kortex_bringup`/`kortex_driver` 0.2.3) uruchamiają się dopiero po poprawce
+niezgodności wersji: `kortex_description` 0.2.3 przekazuje makru chwytaka parametr
+`isaac_joint_commands`, którego `robotiq_description` 0.0.1 nie deklaruje (xacro:
+`Invalid parameter`). Obejściem jest nakładka z kopią `robotiq_description`, w której makro
+2F-85 deklaruje oba parametry, umieszczona na początku `AMENT_PREFIX_PATH` (README).
+Wynik: JTC aktywny, `twist_controller` załadowany i nieaktywny, `/joint_states` w kolejności
+dowolnej i ze stawami chwytaka (most mapuje po nazwach). **FK rdzenia wobec URDF Kortexa:
+0.2 mm, 0.00° w pozie zerowej i startowej `arm_d`.** Przełączenie na `twist_controller`
+atrapa odrzuca („prepare command mode switch was rejected”) — zgodnie z dokumentacją
+`ros2_kortex` interfejs twist istnieje tylko na sprzęcie; most kończy wtedy pracę czysto na JTC.
+
+Próba ujawniła błąd: `--home-safe` bez `--home` pomijał bazowanie, a wszystkie komendy sesji
+w README podawały tylko `--home-safe` — test skokowy i polityka ruszyłyby z dowolnej pozy.
+Obecnie `--home-safe` włącza bazowanie.
+
+**Podział kodu.** `bridge_node.py` (870 linii, cztery backendy w jednej klasie) rozdzielono:
+
+| katalog | zawartość |
+|---|---|
+| `core/` | moduły bez ROS: `obs_core`, `twist_out`, `step_test`, `safety`, `operator_input`, `aruco_board`, `webots_truth` (logika bez zmian) |
+| `robots/` | `base.py` — wspólna strona ROS (stawy, TF, bazowanie przez JTC, heartbeat, watchdog; zarazem backend `dry`), `kortex.py`, `servo.py`, `ik.py` — każdy dodaje tylko wyjście i haki startu/końca |
+| `board.py` | źródła pozy tablicy (`nominal`, `x,y,z`, ArUco) |
+| `bridge_node.py` | CLI, bramki startowe, pętla 20 Hz, test skokowy |
+| `tools/` | `deadman`, `mock_kortex`, `diag_latency`, `aruco_probe`, `record_demo` |
+
+Regresja na atrapie (`mock_kortex`, L 40 ms, τ 60 ms, K 0.95): test skokowy przed i po
+podziale, naprzemiennie — mediany martwego czasu 43/51/52 ms wobec 51/48/51 ms (rozrzut między
+biegami, nie zmiana), K 0.95 na wszystkich osiach; bieg polityki 120 kroków z tym samym filtrem —
+odległość chwytaka od celu zgodna do 1.5 mm na całym biegu. `verify_obs_core.py`: bloki
+obserwacji identyczne jak przed podziałem. Backendy `servo` i `ik` sprawdzone tylko
+importem i kompilacją (Webots nieuruchamiany).
+
+### 6.65. Rekonesans w labie: chwytak 2F-140, TCP, limity, stan ROS (2026-10-29)
+
+Odczyt z Web App Kinovy (`192.168.50.9`) i eksport Monitoringu (bez ruchu ramienia z mostu).
+
+**Konfiguracja ramienia.** Gen3 Ultra Lightweight, 6 DOF, spherical wrist, bez hamulców,
+moduł wizyjny L53 (kolor 640×480, 30 fps), firmware bazy 2.5.2-1. **Chwytak: Robotiq 2F-140**,
+a nie 2F-85, jak przyjęto na podstawie pierwotnej informacji. Model Webots MASKOR (2F-140) jest
+zgodny ze sprzętem; scena treningowa robosuite (`Robotiq85Gripper`) nie jest. Narzędzie
+w Web App: transformacja TCP Z = 0.2 m, masa 1.025 kg, środek masy Z = 0.073 m.
+
+**Różnica geometrii w robosuite** (scena `arm_d`, chwytak zamknięty, układ dłoni):
+
+| | Robotiq85Gripper | Robotiq140Gripper |
+|---|---|---|
+| `grip_site` wzdłuż osi Z dłoni | 0.145 m | 0.2075 m |
+| stawy chwytaka w obserwacji | 6 | 6 |
+| rozmiar obserwacji (część robota) | bez zmian | bez zmian |
+
+Punkt chwytu 2F-140 leży o ok. 62 mm dalej od kołnierza. Polityka `arm_d` sterowana
+bez zmian doprowadziłaby punkt chwytu 2F-85 do grzybka, a rzeczywiste palce weszłyby ok. 6 cm
+w tablicę. **`arm_d` nie nadaje się do uruchomienia z 2F-140 bez dostosowania.** Wymiar
+obserwacji się nie zmienia, więc możliwe jest dotrenowanie `arm_d` w scenie z
+`Robotiq140Gripper`. Przed tym należy przepuścić `arm_d` przez nową scenę
+i zmierzyć, co się psuje. Do sprawdzenia w kodzie: bramka palca (`important_geoms` 2F-140),
+mediany stawów chwytaka w `obs_core`, kolizje dłuższego chwytaka z korpusem Spota w pozie
+startowej, `GRIP_OFFSET` mostu.
+
+**FK rdzenia wobec pozy z kontrolera** (jeden zrzut, ramię nieruchome, stawy
+359.78/254.749/210.851/359.408/299.516/90.332°): punkt Kinovy względem kołnierza z FK rdzenia
+to (5.4, −5.8, 203.1) mm w układzie kołnierza, przy TCP 200 mm; osie Z narzędzia różnią się
+o 0.59°. Łącznie ok. 8 mm, czyli powyżej bramki startowej mostu (5 mm / 2°), jeśli most
+porówna FK z pozą raportowaną przez kontroler. Wobec URDF Kortexa różnica wynosiła 0.2 mm (6.64),
+więc rozbieżność dotyczy modelu nominalnego wobec kontrolera. Jeden zrzut nie wystarcza do
+wniosku; potrzebne kilka póz. Odchyłka 3 mm wzdłuż Z jest zgodna z offsetem 0.203 m
+w `kortex_ros2_python`. Rama narzędzia Kinovy jest obrócona o 180° wokół Z względem
+`grip_site` robosuite (konwencja, nie błąd).
+
+**Limity prędkości** (Speed Limits → Advanced, tryb *Angular Joystick*): prędkości stawów
+50°/s (0.873 rad/s), przyspieszenia 57.3°/s² (1 rad/s²) dla stawów 1–3 i 572.96°/s² (10 rad/s²)
+dla 4–6. Trening `arm_d`: 1.39/1.22 rad/s i 5.2/10 rad/s² × [0.6, 1.4]. Odczytano tylko tryb
+stawowy; limity trybu twist (którego używa most) pozostają do odczytu. Jeśli w trybie twist
+obowiązuje 1 rad/s² dla stawów 1–3, dynamika jest 3–5 razy wolniejsza niż w treningu.
+
+Tryby kartezjańskie (drugi odczyt): *Cartesian Joystick* 0.2 m/s i 20°/s (0.349 rad/s), stawy
+50°/s, bez pola przyspieszeń; *Cartesian Trajectory* 0.1 m/s; *Cartesian Waypoint Trajectory*
+0.1 m/s i 20°/s. Trening: kapy narzędzia 0.5 m/s i 0.8727 rad/s. Jeśli komendy twist podlegają
+limitom *Cartesian Joystick* (do potwierdzenia), kontroler obcina prędkość do 40 % kap
+treningowych w obu składowych. Przycisk „SET MAX” wskazuje, że są to wartości ustawione przez
+lab, a nie maksimum sprzętu. Wpływ zależy od tego, jak często polityka przekracza 0.2 m/s
+i 20°/s; rozkład prędkości komend da się zmierzyć w symulacji.
+
+**Pomiar tablicy (Omniboard w labie, taśma).** Porównanie ze sceną `arm_d` (rola tablicy 45°,
+ścianka czołowa 8 cm od ściany):
+
+| wielkość | pomiar | symulacja |
+|---|---|---|
+| wysokość środka przycisku środkowego nad podłogą | 65.5 cm | 64.0 cm (świat z = 0) |
+| szczyt grzybka środkowego od ściany | ok. 16.5 cm | 13.3 cm |
+| szczyt grzybka bocznego od ściany | 10.5 cm | 7.75 cm |
+| odległość boczny–środkowy | 17 cm (punkty pomiaru niepewne) | 15.5 cm (szczyt–szczyt) |
+| → różnica głębokości szczytów | 6.0 cm | 5.55 cm |
+| wysokość grzybka | 3.0 cm | 5.3 cm (szczyt nad ścianką) |
+| wysunięcie przy pełnym wciśnięciu | 2.4 cm (skok 6 mm) | skok 6 mm (`x_stroke`) |
+| wysunięcie po zatrzaśnięciu | 2.5 cm (5 mm poniżej spoczynku) | zatrzask na pełnym skoku |
+| kąt ścianek bocznych | 45° (wydruk modelu MASKOR) | 45° |
+
+Skok i zatrzask są zgodne z profilem E-stopu (6 mm, aktywacja 5.9 mm). Szczyty grzybków leżą
+o ok. 3.2 cm (środkowy) i 2.75 cm (boczne) dalej od ściany niż w symulacji; przesunięcie całej
+tablicy wzdłuż normalnej kompensuje odległość postoju Spota (kształt: niżej). Niezmierzona pozostaje wysokość
+podstawy ramienia na Spocie nad podłogą (w symulacji 0.62 m z TF Webots, czyli 2 cm poniżej
+środka tablicy; przy 65.5 cm odpowiada temu podstawa na ok. 63.5 cm). Tolerancja treningowa wysokości: ±3 cm (`base_z_noise`).
+
+**Zdjęcie tablicy (`PXL_20261029_102156184.jpg`).** Tablica to wydruk Omniboardu z modelu
+MASKOR (ten sam, co w robosuite i Webots), z przykręconymi puszkami E-stop (żółta pokrywa,
+puszka 6.5 × 6.5 cm, wysokość 5 cm, grzybek 3 cm). Puszka środkowa leży na ściance czołowej, cztery pozostałe na ściankach
+bocznych pod 45°; układ ukośny jak w scenie (rola 45°). Różnica względem symulacji: grzybek nie
+siedzi bezpośrednio na ściance, lecz na puszce, co odsuwa szczyt wzdłuż normalnej. Z pomiarów:
+środkowy +3.2 cm, boczne +2.75 cm wzdłuż osi ściany, czyli ok. +3.9 cm wzdłuż ich normalnych
+(2.75 / cos 45°). Obie wartości opisuje w przybliżeniu jedno przesunięcie szczytów o 3–4 cm
+wzdłuż normalnych (rozbieżność 0.7 cm mieści się w dokładności pomiaru taśmą). Z wymiarów puszki
+szczyt grzybka leży 5 + 3 = 8 cm nad ścianką (symulacja 5.3 cm); model przewiduje wtedy szczyt
+środkowy 16.0 cm i boczne 9.7 cm od ściany wobec zmierzonych 16.5 i 10.5 cm. Do modelu sceny:
+szczyt grzybka 8 cm nad ścianką oraz geometria kolizyjna puszek
+(szersze niż podstawy przycisków w modelu), istotna dla kolizji chwytaka z sąsiednimi puszkami.
+
+**Wymiary tablicy w labie** (konstrukcja z drewna malowana na czarno, nie wydruk; pomiar taśmą).
+Zmierzono: długość ramienia przy ścianie 13 cm i przy ściance przedniej 4.5 cm (od wcięcia
+między ramionami do końca), grubość 8.4 cm, rozpiętość ramion 30–30.5 cm, odległość od
+najniższego punktu tablicy do dołu puszki środkowej ok. 8.5 cm, szerokość ramienia 3.5–3.8 cm.
+Bryła wyliczona z tych pomiarów (szerokość 3.65 cm):
+
+| wielkość | lab | `Omniboard.stl` | scena (`BUTTON_FACES`) |
+|---|---|---|---|
+| szerokość ramienia | 3.5–3.8 cm | 8 cm | – |
+| koniec ramienia przy ścianie (od środka) | 14.8 cm | 16 cm | – |
+| koniec ramienia na ściance przedniej | 6.3 cm | 8 cm | – |
+| grubość | 8.4 cm | 8 cm | 8 cm |
+| kąt skosu | 44.7° | 45° | 45° |
+| środek skosu w płaszczyźnie ściany | 10.6 cm | 12 cm | 10.7 cm |
+| rozpiętość ramion | 29.7 cm (zmierzono 30–30.5) | 32 cm | – |
+| szczyt grzybka środkowego od ściany (+8 cm puszka z grzybkiem) | 16.4 cm (zmierzono 16.5) | – | 13.3 cm |
+| szczyt grzybka bocznego od ściany | 9.9 cm (zmierzono 10.5) | – | 7.75 cm |
+| najniższy punkt tablicy → dół puszki środkowej | 8.5 cm (zmierzono 8.5) | – | – |
+
+Pozycje przycisków w scenie (promień 10.7 cm) zgadzają się z realną tablicą do 1 mm; siatka
+STL (12 cm) nie, a podstawa przycisku bocznego jest w niej wpuszczona ok. 9 mm w skos. Kolizja
+tablicy w scenie to otoczka wypukła siatki, wypełniająca przestrzeń między ramionami; realna
+tablica (ramiona 3.65 cm) jest tam pusta, więc model jest zachowawczy. Jedyna istotna różnica
+tablicy: szczyt grzybka 8 cm nad ścianką zamiast 5.3 cm. Model przycisku w scenie ma już
+obudowę 66 × 66 mm (wysokość 40 mm), więc różnica dotyczy wysokości, nie obecności puszki.
+
+### 6.66. Scena sprzętowa: chwytak 2F-140 i puszki z labu; `arm_d` w nowej scenie (2026-10-29)
+
+**Zmiany w kodzie** (domyślnie bez zmian, scena `arm_d` odtwarza się jak dotąd):
+- `my_assets/objects/xml/button_lab.xml`: obudowa 65 × 65 × 50 mm, szczyt grzybka 80 mm nad
+  ścianką (wymiary z 6.65); staw, grzybek, sity i profil E-stopu jak w `button.xml`;
+- `ButtonBoardEnv(button_xml=...)`, `ButtonObject(xml=...)`;
+- `train_board.py`: klucze configu `gripper` (np. `Robotiq140Gripper`) i `button_xml`;
+- `compare_models.py`: flagi `--gripper`, `--button-xml`.
+
+Kontrola sceny (poza `arm_d`, bez szumów tablicy): szczyty grzybków 80 mm nad ścianką, środkowy
+16.0 cm i boczne 9.7 cm od ściany (pomiar 16.5 / 10.5 cm; tablica w scenie ma 8 cm grubości
+wobec 8.4 cm). Obserwacja bez zmian (60 + 60), bramka palca znajduje 8 geometrii palców 2F-140,
+chwytak się zamyka (`action[-1] = 1` zamyka oba modele), w pozie startowej brak kontaktów
+z tablicą i Spotem. Punkt chwytu 2F-140 startuje 7 cm od szczytu środkowego grzybka (2F-85: 16 cm).
+
+**`arm_d` w nowej scenie** (test dymny n=20, ziarna 1234–1253, h=2000, scena `arm_d`:
+`--kinova-limits --acc-limits --acc-mode scale --action-delay 0`, profil E-stopu `hw`, Spot,
+kamera, `base_x_offset −0.34`, poza startowa `arm_d`):
+
+| scena | sukces | czas do sukcesu | epizody z kolizją | kroki kolizji / ep | kontakt ze Spotem |
+|---|---|---|---|---|---|
+| 2F-85 + `button.xml` (bazowa) | 20/20 | 321 | 10/20 | 2.0 | 0/20 |
+| 2F-85 + `button_lab.xml` | 20/20 | 257 | 10/20 | 1.4 | 0/20 |
+| 2F-140 + `button.xml` | 20/20 | 762 | 20/20 | 103.8 | 9/20 |
+| **2F-140 + `button_lab.xml` (lab)** | **20/20** | **514** | **20/20** | **35.3** | **8/20** |
+
+Puszki same niczego nie pogarszają. Pogorszenie pochodzi od chwytaka: kroki kolizji z tablicą
+rosną 18-krotnie (35.3 wobec 2.0), pojawia się kontakt ze Spotem, czas rośnie 1.6 raza. Sukces
+utrzymuje się, bo obserwacja jest względna (cel minus punkt chwytu), ale kontakt z tablicą
+w co drugim kroku podejścia jest na sprzęcie nie do przyjęcia. n=20 to test dymny, lecz różnica
+(20/20 wobec 10/20 epizodów z kolizją, 35 wobec 2 kroków) wykracza daleko poza rozrzut.
+Wniosek: dotrenowanie w scenie sprzętowej (2F-140 + `button_lab.xml`), z pomiarem kolizji jako
+kryterium. Przed treningiem do rozważenia poza startowa (chwytak startuje bliżej tablicy).
+Po stronie mostu do dostosowania: `GRIP_OFFSET` (0.1448 → 0.2075 m) i mediany stawów chwytaka
+w `obs_core` (obecnie z epizodów 2F-85).
+
+**Limity twist.** `ros2_bridge/tools/kortex_limits.py`: odczyt przez Kortex API (bez ruchu)
+limitów twardych, miękkich dla każdego trybu sterowania i, z `--watch`, aktywnego trybu oraz
+prędkości narzędzia, gdy ramieniem steruje operator. Tryb `CARTESIAN_JOYSTICK` podczas ruchu
+twist i nasycenie prędkości na 0.2 m/s potwierdzą, że limit z Web App obowiązuje most.
+Narzędzie sprawdzone tylko kompilacją (brak `kortex_api` poza komputerem labu).
+
+### 6.67. `arm_d` przy limitach prędkości z Web App labu (2026-11-03)
+
+Pytanie: czy `arm_d` działa, jeśli kontroler ogranicza twist do wartości trybu *Cartesian
+Joystick* z Web App (0.2 m/s, 20°/s = 0.349 rad/s, stawy 50°/s = 0.873 rad/s; 6.65). Kryterium
+zapisane przed biegiem: sukces i czas wobec sceny sprzętowej z kapami treningowymi. Nowe flagi
+`compare_models.py`: `--twist-limits LIN,ANG` i `--joint-vel` (oba z `--kinova-limits`).
+Scena sprzętowa (6.66), n=20, ziarna 1234–1253, h=2000, d=0, pozostałe flagi jak w 6.66:
+
+| kapy | sukces | czas do sukcesu | kroki kolizji / ep | kontakt ze Spotem | wciśnięte w porażkach (0..4) |
+|---|---|---|---|---|---|
+| treningowe 0.5 m/s, 0.8727 rad/s | 20/20 | 514 | 35.3 | 8/20 | – |
+| tylko kątowa 0.349 rad/s | 16/20 | 844 | 22.6 | 10/20 | [0, 0, 0, 0, 4] |
+| tylko liniowa 0.2 m/s | 0/20 | – | 19.6 | 19/20 | [5, 4, 7, 4, 0] |
+| twist z labu (0.2, 0.349) | 2/20 | 1582 | 28.7 | 3/20 | [5, 7, 5, 0, 1] |
+| twist + stawy 0.873 rad/s (pełny zestaw labu) | 1/20 | 1816 | 27.9 | 3/20 | [5, 6, 6, 1, 1] |
+
+Polityka nie zwalnia, lecz się gubi: w porażkach wciska 0–2 przyciski z 5 przy dużym zapasie
+horyzontu. Decyduje limit liniowy (sam daje 0/20 i kontakt ze Spotem w 19/20 epizodach); limit
+kątowy kosztuje 4/20 i wydłuża czas 1.6 raza. Wynik jest zgodny z wcześniejszym pomiarem kosztu
+limitów (polityka z jednej obwiedni prędkości nie przenosi się na dużo niższą). Wniosek: przy
+limitach labu `arm_d` nie nadaje się do wdrożenia. Albo lab podnosi limit *Cartesian Joystick*
+do wartości treningowych (o ile twist mu podlega, 6.66: `kortex_limits.py`), albo trening
+odbywa się z kapami 0.2 m/s i 0.349 rad/s, razem z chwytakiem 2F-140 i puszkami.
+
+### 6.68. Ramiona G i L: dotrenowanie w scenie sprzętowej (chmura, start 2026-11-03)
+
+Dwa biegi równolegle, oba **+8M kroków od `arm_d` (98 123 552)**, cel 106 123 552, scena
+sprzętowa z 6.66 (`Robotiq140Gripper`, `button_lab.xml`). Reszta configu jak w `arm_d`
+(opóźnienie [0, 2], tryb `scale`, randomizacje, `n_envs: 8`).
+
+| ramię | config | kapy narzędzia | prędkości stawów | cel |
+|---|---|---|---|---|
+| **G** | `arm_g.yaml` | 0.5 m/s, 0.8727 rad/s (jak w treningu) | 1.39/1.22 rad/s | lab podniesie limit *Cartesian Joystick* |
+| **L** | `arm_l.yaml` | 0.2 m/s, 0.349 rad/s (Web App) | 0.873 rad/s (50°/s) | limity labu bez zmian |
+
+Kryteria zapisane przed biegiem (n=100, h=2000, d=0 i d=2, scena oceny = scena treningu ramienia):
+- G: sukces ≥ 95/100; kroki kolizji na epizod i liczba epizodów z kontaktem ze Spotem nie
+  większe niż `arm_d` w jego własnej scenie;
+- L: sukces ≥ 90/100; te same warunki kolizji.
+
+Punkt wyjścia (n=20): `arm_d` w scenie G 20/20, kolizje 35.3 kroku/ep, Spot 8/20; w scenie L
+1/20 (6.66–6.67). Test dymny `arm_l` lokalnie (jedna porcja 16 384 kroki): wznowienie od
+98.12M, limity z configu odczytane poprawnie, 290 kroków/s.
+
+Uruchomienie: `cloud/bundle.sh` przyjmuje teraz checkpoint startowy jako drugi argument
+(wysyłany pod własną nazwą do `start/`); poprzednia paczka kodu w `backup/kod_before_arm_gl.tar.gz`.
+Instancje `kinova-arm-g`, `kinova-arm-l` (e2-standard-8, spot), metadane `start-ckpt =
+ppo_board_98123552_steps.zip`, `start-step = 98123552`, `target-steps = 106123552`. Przy
+ok. 170 krokach/s na instancji to ok. 13 h na ramię.
+
+**Przebieg.** G doszło do celu po 13.4 h (finalny checkpoint `ppo_board_106123552_steps.zip`).
+L zostało wywłaszczone 2026-11-03 12:58 UTC na 99 723 552 krokach (po 3.5 h; polityka STOP
+nie wznawia instancji) i uruchomione ponownie 2026-11-04 ręcznie (`gcloud compute instances
+start`), wznowienie od najwyższego checkpointu. Do 99.7M ewaluacja w treningu L nie
+pokazuje postępu (długość epizodu ~1950/2000).
+
+**Wynik G** (n=100, ziarna 1234–1333, h=2000, flagi sceny `arm_d`, tryb `scale`; G w scenie
+sprzętowej, `arm_d` w swojej scenie bazowej):
+
+| model / scena | d | sukces | czas do sukcesu | epizody z kolizją | kroki kolizji / ep | epizody z kontaktem ze Spotem | kroki kontaktu ze Spotem / ep |
+|---|---|---|---|---|---|---|---|
+| `arm_d` / bazowa | 0 | 98/100 | 253 | 48 | 3.5 | 2 | 0.7 |
+| **G / sprzętowa** | 0 | **100/100** | 253 | 43 | **2.6** | **27** | 2.5 |
+| `arm_d` / bazowa | 2 | 98/100 | 387 | 92 | 18.7 | 11 | 1.8 |
+| **G / sprzętowa** | 2 | **100/100** | 343 | 83 | **8.9** | **52** | 5.6 |
+
+Rozliczenie z kryterium: sukces ≥ 95/100 spełniony (100/100 przy obu opóźnieniach); kroki
+kolizji z tablicą niższe od `arm_d` (2.6 wobec 3.5 i 8.9 wobec 18.7) — spełnione; **liczba
+epizodów z kontaktem ze Spotem — niespełnione** (27 wobec 2 i 52 wobec 11). Kontakty są krótkie
+(średnio 2.5 / 5.6 kroku na epizod), ale częste. Względem `arm_d` w scenie sprzętowej (n=20:
+35.3 kroku kolizji, Spot 8/20) dotrenowanie usunęło kolizje z tablicą, a kontakt ze Spotem
+zmalał tylko z 40 % do 27 % epizodów. G nie spełnia więc zapisanego kryterium; przed decyzją
+o sprzęcie trzeba ustalić, która część ramienia/chwytaka dotyka Spota i w której fazie epizodu.
+
+**Diagnoza kontaktu ze Spotem** (G, n=30, ziarna 1234–1263, scena sprzętowa, zapis każdej pary
+geometrii w kontakcie). Przy d=0 kontakt w 12/30 epizodów, przy d=2 w 14/30. Prawie zawsze dotyka
+**nadgarstek** (`spherical_wrist_1/2_link`) **listwy kamery przedniej** (`spot_frontcam`,
+X −0.13…−0.07) i przedniej krawędzi korpusu. Punkty kontaktu leżą na X −0.11…−0.07, Z 0.53–0.66,
+czyli przy przedniej krawędzi Spota, na wysokości podstawy ramienia. Chwytak dotyka Spota tylko
+w jednym epizodzie, a przy d=2 dochodzą przedramię i ramię (jeden epizód, penetracja do 68 mm).
+Kontakty pojawiają się wcześnie (pierwszy kontakt w krokach 31–558, mediana ok. 80) i w ok. 75 %
+zdarzeń przy celu 0 (środkowy) lub 3 (dolny skos). Mechanizm geometryczny: chwytak 2F-140 jest
+o 62 mm dłuższy, a szczyty grzybków leżą o 27 mm bliżej robota, więc przy postoju
+`base_x_offset −0.34`, dobranym dla 2F-85, nadgarstek przy środkowym przycisku cofa się
+o ok. 9 cm nad przednią krawędź Spota.
+
+Test odsunięcia postoju (bez treningu, te same ziarna, n=30):
+
+| `base_x_offset` | d | sukces | czas do sukcesu | kroki kolizji / ep | epizody z kontaktem ze Spotem |
+|---|---|---|---|---|---|
+| −0.34 (trening) | 0 | 30/30 | – | – | 12/30 |
+| −0.40 | 0 | 29/30 | 268 | 1.0 | **0/30** |
+| −0.43 | 0 | 30/30 | 358 | 0.9 | **0/30** |
+| −0.34 (trening) | 2 | 30/30 | – | – | 14/30 |
+| −0.40 | 2 | 28/30 | 400 | 8.7 | 4/30 |
+| −0.43 | 2 | 30/30 | 584 | 5.8 | 3/30 |
+
+Odsunięcie Spota o 6–9 cm usuwa kontakt przy d=0 i redukuje go ok. czterokrotnie przy d=2, kosztem
+dłuższego czasu (polityka trenowana przy −0.34 dosięga dalej). Potwierdza to wniosek z 6.42:
+geometria postoju działa silniej niż dotrenowanie. Wynik dotyczy n=30 i przed decyzją wymaga
+potwierdzenia przy n=100. Na sprzęcie odsunięcie to wyłącznie miejsce postoju Spota. Listwa
+kamery pochodzi z modelu Webots (Kinect); trzeba sprawdzić, co faktycznie stoi z przodu Spota w labie.
+
+**Przegląd postoju z prześwitem** (G, n=30, ziarna 1234–1263, scena sprzętowa). Dla każdego
+epizodu liczono najmniejszą odległość (`mj_geomDistance`) między geometriami kolizyjnymi
+ramienia i chwytaka (bez `robot0_base`, który stoi na Spocie) a korpusem i listwą kamery Spota.
+Prześwit liczono osobno dla pozy startowej (t < 15) i dla reszty epizodu. Wartość ujemna oznacza
+penetrację.
+
+| `base_x_offset` | d | sukces | czas | kroki kolizji / ep | ep. z kontaktem ze Spotem | prześwit w starcie | prześwit min | prześwit p10 | prześwit mediana |
+|---|---|---|---|---|---|---|---|---|---|
+| −0.34 | 0 | 30/30 | 233 | 2.1 | 12 | 0.7 cm | −1.7 cm | −1.1 cm | 1.4 cm |
+| −0.37 | 0 | 30/30 | 246 | 0.8 | 2 | 0.7 cm | −1.2 cm | 0.8 cm | 3.7 cm |
+| −0.40 | 0 | 29/30 | 268 | 1.0 | 0 | 0.8 cm | 2.2 cm | 3.4 cm | 5.8 cm |
+| **−0.43** | 0 | **30/30** | 358 | 0.9 | **0** | 0.8 cm | **3.5 cm** | 4.4 cm | 7.2 cm |
+| −0.46 | 0 | 24/30 | 608 | 0.4 | 1 | 0.8 cm | −4.2 cm | 5.3 cm | 8.5 cm |
+| −0.49 | 0 | 1/30 | 343 | 0.6 | 0 | 0.8 cm | 3.1 cm | 6.8 cm | 11.0 cm |
+| −0.52 | 0 | 0/30 | – | 0.1 | 4 | 0.9 cm | −5.2 cm | −0.7 cm | 9.3 cm |
+| −0.34 | 2 | 30/30 | 316 | 7.6 | 14 | 0.8 cm | −6.8 cm | −2.8 cm | 0.7 cm |
+| −0.37 | 2 | 30/30 | 357 | 4.8 | 6 | 0.8 cm | −1.5 cm | −0.8 cm | 1.7 cm |
+| −0.40 | 2 | 28/30 | 400 | 8.7 | 4 | 0.8 cm | −0.7 cm | −0.3 cm | 2.4 cm |
+| **−0.43** | 2 | **30/30** | 584 | 5.8 | **3** | 0.8 cm | −1.6 cm | 0.4 cm | 4.3 cm |
+| −0.46 | 2 | 19/30 | 883 | 9.5 | 3 | 0.8 cm | −4.0 cm | 1.1 cm | 5.9 cm |
+| −0.49 | 2 | 4/30 | 1024 | 6.5 | 7 | 0.8 cm | −12.4 cm | −5.5 cm | 5.6 cm |
+| −0.52 | 2 | 0/30 | – | 1.7 | 7 | 0.9 cm | −9.7 cm | −5.3 cm | 5.6 cm |
+
+Wnioski:
+- **Okno postoju to −0.40…−0.43.** Bliżej nadgarstek wchodzi nad kamerę, a dalej kończy się zasięg
+  (przy −0.46 sukces spada do 24/30, przy −0.49 do 1/30, a ramię wyciągnięte do granicy zaczyna
+  zahaczać barkiem i przedramieniem o Spota).
+- **Przy d=0 najlepszy jest −0.43:** 30/30, zero kontaktów, najmniejszy prześwit 3.5 cm. Do
+  krawędzi zasięgu zostają jednak tylko 3 cm.
+- **Przy d=2 żaden postój nie daje zera.** Przy −0.43 kontakt ma 3/30 epizodów, a najmniejszy
+  prześwit wynosi −1.6 cm. Martwy czas spycha nadgarstek nad kamerę niezależnie od postoju.
+- **Poza startowa ma 0.7–0.9 cm prześwitu nad listwą kamery** niezależnie od postoju, bo
+  przesuwa się razem ze Spotem. Na sprzęcie to za mały zapas wobec niepewności geometrii
+  przodu Spota.
+- Najbliżej zawsze jest nadgarstek (`spherical_wrist_1/2`) przy listwie kamery.
+
+W układzie labu postój −0.43 oznacza: oś podstawy Kinovy 0.93 m od ściany, przód Spota (listwa
+kamery) ok. 0.66 m od ściany, Spot ustawiony prostopadle do ściany i wycentrowany na tablicy
+(trening toleruje ±6 cm przesunięcia tablicy w Y/Z, odległość w X i odchylenie yaw nie były
+losowane).
+
+**Sieć i ROS (laptop przez Wi-Fi ALeRT-4G, zenoh).** RTT do max1: min/śr./maks./mdev
+1.06/1.69/4.65/0.57 ms (200 pakietów co 50 ms), czyli pomijalne wobec kroku 50 ms. Pierwsze
+`ros2 node list` zakończyło się `!rclpy.ok()` (demon ROS uruchomiony przed podłączeniem do sieci);
+`ros2 daemon stop; ros2 daemon start` usunęło problem. W chwili odczytu: brak `/joint_states`
+i ramki `gen3_base_link` w TF (sterownik Kinovy nie publikował), `/twist_controller/commands`
+typu `TwistStamped` z jednym publikującym (`spot_controller`) i zerem subskrybentów, usługa
+`/toggle_admittance` widoczna. Stawy w Web App mają zakres [0°, 360°) dla wszystkich sześciu.
+
+
+**Wynik L** (finalny checkpoint 106 123 552, scena sprzętowa z limitami Web App: `--twist-limits
+0.2,0.349 --joint-vel 0.873`, postój −0.34, h=2000, ziarna 1234+). Ocena przerwana po 17
+epizodach na punkt, bo kryterium było już rozstrzygnięte: przy d=0 i przy d=2 sukces **0/17**,
+więc nawet 83 sukcesy w pozostałych epizodach nie dałyby wymaganych 90/100. Każdy epizod kończy
+się na horyzoncie. Liczba wciśniętych przycisków na epizod: d=0 średnio 1.9/5 (rozkład 0–4),
+d=2 średnio 1.6/5. Krzywa ewaluacji w treningu (99.9M → 106.1M): nagroda −1.9 → −1.2, długość
+epizodu nadal ~2000, czyli bez nauki kończenia zadania. **L nie spełnia kryterium.** 8M kroków
+dotrenowania nie wystarcza, żeby polityka z `arm_d` przystosowała się do limitu 0.2 m/s (dla
+porównania `arm_d` bez dotrenowania: 1/20, 6.67). Nie ustalono, czy pomógłby dłuższy trening,
+czy potrzebna jest inna zmiana (np. dłuższy horyzont lub trening od wcześniejszego punktu).
+Plik ewaluacji L zawiera tylko część po wznowieniu (wywłaszczenie nadpisało wcześniejszą).
+
+### 6.69. Ramię P: dotrenowanie przy docelowym postoju Spota (chmura, start 2026-11-05)
+
+Spot jest ustawiany przed tablicą ręcznie, więc postój jest parametrem do wyboru. Przegląd 6.68
+wskazał okno −0.40…−0.43. Przy d=2 żaden postój nie usuwa kontaktu nadgarstka z listwą kamery,
+dlatego `arm_g` dotrenowano przy postoju docelowym.
+
+- Start: `arm_g` 106 123 552, **+8M**, cel 114 123 552 (`training/configs/arm_p.yaml`).
+- Zmiany względem `arm_g`: `base_x_offset −0.43` (oś podstawy Kinovy 0.93 m od ściany) oraz
+  nowy parametr `base_x_noise 0.02`. Postój jest losowany raz na epizod z zakresu ±2 cm,
+  a ramię i bryły Spota przesuwają się razem. Zakres ±2 cm odpowiada tolerancji okna z 6.68
+  i ma zostać zastąpiony rozrzutem ustawienia zmierzonym w labie.
+- Kod: `ButtonBoardEnv(base_x_noise=...)`, klucz configu `base_x_noise`. Przy wartości 0
+  (domyślnej) env nie losuje nic dodatkowego, więc ziarna i parowanie ocen są takie jak wcześniej.
+  Kontrola: przy 6 resetach podstawa przyjmuje X −0.448…−0.411, korpus i listwa kamery zachowują
+  względem niej stałe przesunięcie (−0.2315 / +0.2410). Test dymny lokalnie (16 384 kroki):
+  wznowienie od 106.12M, 283 kroki/s.
+- Instancja `kinova-arm-p` (e2-standard-8, spot), paczka kodu sprzed zmiany w
+  `backup/kod_before_arm_p.tar.gz`. Instancja L pobiera kod przy każdym starcie, ale przy
+  `base_x_noise = 0` liczy to samo co dotąd.
+
+Kryterium zapisane przed biegiem (n=100, h=2000, scena sprzętowa):
+- postój −0.43, d=0 i d=2: sukces ≥ 95/100; epizody z kontaktem ze Spotem ≤ 2/100 (d=0)
+  i ≤ 5/100 (d=2); kroki kolizji z tablicą na epizod nie wyższe niż `arm_g` przy −0.43;
+- postoje −0.41 i −0.45, d=0: sukces ≥ 95/100, kontakt ze Spotem ≤ 2/100.
+
+Odniesienie: `arm_g` (bez dotrenowania przy nowym postoju), n=100, ziarna 1234–1333, h=2000:
+
+| postój | d | sukces | czas do sukcesu | kroki kolizji / ep | ep. z kontaktem ze Spotem | prześwit min | prześwit p10 |
+|---|---|---|---|---|---|---|---|
+| −0.41 | 0 | 98/100 | 246 | 2.2 | 1 | −6.5 cm | 3.5 cm |
+| −0.43 | 0 | 100/100 | 344 | 1.1 | 0 | 3.5 cm | 4.5 cm |
+| −0.43 | 2 | 97/100 | 625 | 6.8 | 10 | −2.0 cm | 0.4 cm |
+| −0.45 | 0 | 81/100 | 495 | 1.4 | 3 | −5.0 cm | 4.9 cm |
+
+`arm_g` nie spełnia kryterium P w trzech punktach: kontakt przy −0.43/d=2 (10 > 5), sukces
+przy −0.45 (81 < 95) i kontakt przy −0.45 (3 > 2). Granica kolizji dla P: 1.1 (d=0) i 6.8 (d=2)
+kroku na epizod.
+
+**Wynik P** (finalny checkpoint 114 123 552; n=100, ziarna 1234–1333, h=2000, scena sprzętowa,
+`training/spot_clearance.py`, wyniki w `logs/board_6dof/arm_p/eval_n100/`):
+
+| postój | d | sukces | czas do sukcesu | kroki kolizji / ep | ep. z kontaktem ze Spotem | prześwit w starcie | prześwit min | prześwit p10 |
+|---|---|---|---|---|---|---|---|---|
+| −0.41 | 0 | 100/100 | 192 | 0.7 | 2 | 0.5 cm | −1.2 cm | 2.4 cm |
+| −0.43 | 0 | 100/100 | 199 | 0.8 | 0 | 0.6 cm | 1.2 cm | 3.7 cm |
+| −0.43 | 2 | 100/100 | 258 | 1.5 | **7** | 0.0 cm | −2.8 cm | 1.2 cm |
+| −0.45 | 0 | 99/100 | 219 | 0.4 | 0 | 0.7 cm | 2.6 cm | 4.4 cm |
+
+Rozliczenie z kryterium: sukces ≥ 95/100 we wszystkich punktach — spełnione; kontakt ze Spotem
+przy −0.43/d=0 (0 ≤ 2), −0.41 (2 ≤ 2) i −0.45 (0 ≤ 2) — spełnione; kolizje z tablicą 0.8 ≤ 1.1
+i 1.5 ≤ 6.8 — spełnione; **kontakt ze Spotem przy −0.43/d=2: 7 > 5 — niespełnione.** P nie
+spełnia więc kryterium w jednym punkcie. Względem `arm_g` w tych samych punktach poprawa jest
+wyraźna: kontakt przy d=2 10 → 7 (średnio 0.2 kroku kontaktu na epizod), sukces przy −0.45
+81 → 99, czas przy −0.43/d=0 344 → 199 kroków, kolizje z tablicą 1.1 → 0.8 (d=0) i 6.8 → 1.5 (d=2).
+Przy d=2 najmniejszy prześwit w pozie startowej spada do 0.0 cm: martwy czas przesuwa nadgarstek
+na listwę kamery już w pierwszych krokach.
+
+Nierozwiązane tym biegiem: poza startowa ma 0.7–0.9 cm prześwitu nad listwą kamery (6.68),
+a geometria przodu Spota w labie nie jest zmierzona.
+
+### 6.70. Ramię L2: L z dłuższym epizodem (chmura, start 2026-11-05)
+
+Hipoteza: przy limitach labu polityka L wciska część przycisków (średnio 1.6–1.9/5), więc
+z dłuższym epizodem może zdążyć doświadczyć i nauczyć się pozostałych.
+
+- Start: `arm_l` 106 123 552, **+16M**, cel 122 123 552 (`training/configs/arm_l2.yaml`).
+- Zmiany względem `arm_l`: `horizon` 2000 → 4000; `n_eval_episodes` 20 → 10, żeby koszt
+  ewaluacji na 200k kroków nie wzrósł dwukrotnie. Postój −0.34 jak w L (jedna zmiana naraz).
+- Instancja `kinova-arm-l2`. Checkpoint startowy wysłano jako `start/arm_l_106123552.zip`,
+  bo nazwa `ppo_board_106123552_steps.zip` w `start/` należy już do startu P (`arm_g`).
+- Lokalny strażnik `~/.kinova_watch/watch.sh p l2` co 10 min wznawia wywłaszczone instancje
+  P i L2, dopóki ich ramię nie ma znacznika `KONIEC` (log `~/.kinova_watch/watch.log`).
+
+**Czy dłuższy epizod uczy działania powoli.** Presja czasu w tej nagrodzie wynika z dyskonta,
+a nie z horyzontu. Przy γ = 0.99 horyzont efektywny to ok. 100 kroków, więc wciśnięcie
+przycisku (25 pkt + kształtowanie zbliżania 10 pkt/m) wcześniej jest warte więcej niż później
+niezależnie od tego, czy epizod ma 2000, czy 4000 kroków. Jedyny człon płacący za samą obecność
+to `DENSE_COEF · exp(−8·d)` ≤ 0.05 na krok. Jego zdyskontowana suma przy nieskończonym unoszeniu
+się nad celem wynosi ≤ 0.05 / (1 − γ) = 5 pkt, mniej niż samo wciśnięcie. Dłuższy horyzont nie
+zmienia tego bilansu; zwiększa tylko udział doświadczeń z późniejszymi przyciskami. Koniec
+epizodu na horyzoncie jest w wrapperze oznaczany jako `terminated` (nie `truncated`), więc
+wartość nie jest bootstrapowana; przy horyzoncie efektywnym ~100 kroków dotyczy to tylko
+ostatnich ~100 kroków epizodu, czyli 2.5 % przy h=4000 wobec 5 % przy h=2000.
+
+**Test hipotezy na `arm_l` bez treningu** (h=4000, limity labu, d=0, n=10, ziarna 1234–1243):
+0/10, a liczba wciśniętych przycisków i kroki kolizji w **każdym** epizodzie są identyczne jak
+przy h=2000 (rozkład 0–4: [2, 2, 3, 2, 1]). Wszystkie wciśnięcia zachodzą przed krokiem 2000,
+a przez kolejne 2000 kroków nie dzieje się nic. `stuck: 0` oznacza, że chwytak się porusza
+(zakres ruchu w ostatnich 200 krokach > 3 cm), więc polityka deterministyczna krąży, a nie zwalnia.
+Dla polityki deterministycznej hipoteza „zabrakło czasu” jest więc obalona. L2 ma sens tylko
+o tyle, że w treningu polityka jest stochastyczna i dodatkowe kroki mogą przynieść losowe
+wciśnięcia dalszych przycisków. Punkt kontrolny zapisany przed biegiem: jeśli po 4M kroków
+(110.12M) średnia długość epizodu w ewaluacji w treningu nie spadnie poniżej 3500, bieg zostaje
+przerwany.
+
+Kryterium zapisane przed biegiem (n=100, scena sprzętowa z limitami labu, postój −0.34, d=0
+i d=2): sukces ≥ 90/100 przy h=4000 (podawany też przy h=2000); epizody z kontaktem ze Spotem
+≤ 11/100 i kroki kolizji z tablicą ≤ 18.7 na epizod (`arm_d` we własnej scenie przy d=2).
+
+### 6.71. Wolniejsza pętla sterowania w limitach labu; ramię P8 (chmura, start 2026-11-06)
+
+**Obserwacja.** Limity Web App (*Cartesian Joystick* 0.2 m/s, 0.349 rad/s) to dokładnie 0.4
+limitów treningowych (0.5 m/s, 0.8727 rad/s) dla ruchu liniowego i obrotowego. Polityka działa
+w krokach, nie w sekundach: przy pętli 20 · 0.4 = 8 Hz limit przypadający na krok (2.5 cm, 2.5°)
+jest taki sam jak w treningu. Prędkości stawów w obserwacji trzeba wtedy przemnożyć przez
+20 / f, żeby odpowiadały pętli 20 Hz. Martwy czas ~50 ms to przy 8 Hz 0.4 kroku zamiast 1.
+
+**Błąd próbkowania obserwacji w robosuite.** Przy 8 Hz krok sterowania to 0.125 s = 62.5 kroku
+fizyki po 2 ms. Robosuite wykonuje 62 kroki, a licznik próbkowania obserwabli
+(`_time_since_last_sample` 0.124 < `_sampling_timestep` 0.125) nie zdąży zadziałać, więc
+obserwacja pochodzi z poprzedniego kroku sterowania (pomiar: prędkość w obserwacji 0.041 wobec
+0.062 rad/s w symulacji). Przy 20 Hz (25 kroków) i przy 500/62 ≈ 8.065 Hz lub 6.25 Hz
+(liczba całkowita) obserwacja jest świeża. `ButtonBoardEnv` odrzuca teraz częstotliwość
+dającą niecałkowitą liczbę kroków fizyki (`ValueError` z podpowiedzią). Pierwszy test przy
+dokładnie 8 Hz (P, limity labu, n=30: d=0 19/30, d=1 26/30, ~1200–1300 kroków) był obarczony
+tym błędem: obserwacja spóźniona o 1 krok działała jak dodatkowe opóźnienie.
+
+**Test bez treningu przy 8.065 Hz** (P, postój −0.43, limity labu, `--control-freq 8.064516129
+--dilate-obs`, n=30, ziarna 1234–1263, h=2000 kroków):
+
+| pętla | limity | d | sukces | czas do sukcesu | kroki kolizji / ep | ep. z kontaktem ze Spotem |
+|---|---|---|---|---|---|---|
+| 20 Hz | lab | 0 | 0/30 | – | 0.0 | 0 |
+| 8.065 Hz | lab | 0 | 21/30 | 1369 kroków (170 s) | 0.1 | 0 |
+| 8.065 Hz | lab | 1 | 27/30 | 1250 kroków (155 s) | 0.2 | 0 |
+| 6.25 Hz | lab | 0 | 20/30 | 1348 kroków (216 s) | 0.5 | 2 |
+| 8.065 Hz | treningowe | 0 | 30/30 | 426 kroków (53 s) | 4.4 | 5 |
+| 20 Hz | treningowe | 0 | 30/30 | 199 kroków (10 s) | 0.4 | 0 |
+
+Sama zmiana częstotliwości (8.065 Hz przy limitach treningowych) zachowuje sukces, ale podwaja
+liczbę kroków i zwiększa kolizje z tablicą (0.4 → 4.4). Przy limitach labu potrzeba
+~1250–1370 kroków, czyli 6–7 razy więcej niż przy 20 Hz. 6.25 Hz nie jest lepsze od 8.065 Hz.
+d=1 wypada lepiej niż d=0 także przy świeżej obserwacji. Ruch w kroku nie odpowiada więc dokładnie treningowemu: ramię w każdym
+kroku przyspiesza i hamuje, więc średnio jedzie wolniej niż limit.
+
+**Kod:**
+- `ButtonBoardEnv(obs_vel_scale=...)`: mnoży `robot0_joint_vel`, `robot0_gripper_qvel`
+  i ich kopie w `robot0_proprio-state` (indeksy 18:24 i 41:47, sprawdzane asercją);
+- `train_board.py`: klucze configu `control_freq` i `obs_vel_scale`;
+- `compare_models.py`: `--control-freq HZ`, `--dilate-obs` (skala 20 / HZ); czas do sukcesu
+  w sekundach liczony z faktycznej częstotliwości.
+
+**Ramię P8.** Start `arm_p` 114 123 552, **+8M**, cel 122 123 552
+(`training/configs/arm_p8.yaml`, instancja `kinova-arm-p8`, typ standard): `control_freq`
+500/62 Hz, `obs_vel_scale` 2.48, limity labu (0.2 m/s, 0.349 rad/s, stawy 0.873 rad/s),
+`action_delay_steps` [0, 1] (0–124 ms), postój −0.43 ± 0.02. Każdy krok to 62 kroki fizyki
+zamiast 25, więc tempo spada ok. 2.5-krotnie (lokalnie 44 kroki/s przy obciążonym procesorze);
+szacunek w chmurze ok. 30 h. Test dymny: wznowienie od 114.12M, limity z configu wczytane.
+L2 zatrzymano na 118 023 552 (punkt kontrolny 6.70 niespełniony: długość epizodu 4000 przy 110.12M).
+
+Kryterium zapisane przed biegiem (n=100, h=2000 kroków przy 8.065 Hz = 248 s, limity labu,
+postój −0.43, obserwacja ze skalowaniem prędkości, d=0 i d=1): sukces ≥ 90/100; epizody
+z kontaktem ze Spotem ≤ 5/100; kroki kolizji z tablicą ≤ 2.0 na epizod; średni czas do
+sukcesu ≤ 800 kroków (99 s).
+
+**Przebieg i wynik P8.** Trening doszedł do 122 123 552 po 34.7 h (64 kroki/s). Ewaluacja
+w treningu (h=2000, limity labu): długość epizodu 1296 → 296 kroków, nagroda −5.85 → 0.31.
+Ocena (finalny checkpoint; n=100, ziarna 1234–1333, h=2000 kroków przy 8.065 Hz, limity labu,
+`--dilate-obs`, `training/spot_clearance.py`, wyniki w `logs/board_6dof/arm_p8/eval_n100/`):
+
+| postój | d | sukces | czas do sukcesu | kroki kolizji / ep | ep. z kontaktem ze Spotem | prześwit w starcie | prześwit min | prześwit p10 |
+|---|---|---|---|---|---|---|---|---|
+| −0.41 | 0 | 100/100 | 298 (37.0 s) | 2.9 | 3 | 1.2 cm | −5.6 cm | 5.6 cm |
+| −0.43 | 0 | 99/100 | 290 (36.0 s) | 1.2 | 3 | 1.2 cm | −7.4 cm | 6.2 cm |
+| −0.43 | 1 | 100/100 | 349 (43.3 s) | 3.7 | 4 | 1.0 cm | −6.0 cm | 4.1 cm |
+| −0.45 | 0 | 100/100 | 319 (39.6 s) | 0.9 | 1 | 1.2 cm | −1.9 cm | 6.3 cm |
+
+Rozliczenie z kryterium (postój −0.43, d=0 i d=1): sukces 99 i 100 ≥ 90 — spełnione; kontakt
+ze Spotem 3 i 4 ≤ 5 — spełnione; czas 290 i 349 ≤ 800 kroków — spełnione; kroki kolizji
+z tablicą 1.2 ≤ 2.0 przy d=0 — spełnione, **3.7 > 2.0 przy d=1 — niespełnione.** P8 nie spełnia
+kryterium w jednym punkcie. Względem `arm_p` bez dotrenowania przy tych samych ustawieniach
+(n=30: 21/30 i 27/30, 1250–1370 kroków) sukces rośnie do 99–100/100, a czas spada ok. 4-krotnie,
+do 36–43 s. Przy limitach labu i pętli 20 Hz `arm_p` miał 0/30.
+
+Na sprzęcie metoda wymaga mostu pracującego z tą samą częstotliwością (500/62 Hz) i tego
+samego skalowania prędkości w obserwacji w `obs_core`.
+
+### 6.72. Drgania ramienia P8 (2026-11-11)
+
+Narzędzie `training/jitter_check.py` (argumenty jak `compare_models.py` + `--jitter-json`) zapisuje
+w każdym kroku fizyki (500 Hz) pozycję i prędkość TCP oraz prędkości stawów, a w każdym kroku
+sterowania akcję. Miary na epizod: `tremor_mm` — RMS pozycji TCP po filtrze górnoprzepustowym
+3 Hz (Butterworth 4. rzędu, `sosfiltfilt`); `ripple` — to samo dla modułu prędkości, względem
+średniej prędkości; `rev_tcp` — zawrócenia kierunku TCP na sekundę (iloczyn skalarny kolejnych
+prędkości < 0 przy obu > 5 mm/s, częstotliwość sterowania); `rev_joint` — zmiany znaku prędkości
+stawów na sekundę, suma po stawach (> 0.01 rad/s); `act_flip` — udział kroków, w których któraś
+składowa akcji zmienia znak (obie > 0.05). Kontrola na sygnałach syntetycznych: ruch jednostajny
+0.05 mm (efekt brzegowy filtra), wstrzyknięta sinusoida 1 mm przy 8 Hz 0.71 mm (teoria 0.707).
+
+Wyniki (n=20, ziarna 1234–1253, postój −0.43, scena sprzętowa; mediana [p90]):
+
+| model / pętla / limity | filtr akcji | sukces | czas | kolizje / ep | Spot | `tremor_mm` | `rev_tcp` [1/s] | `rev_joint` [1/s] | `act_flip` |
+|---|---|---|---|---|---|---|---|---|---|
+| P / 20 Hz / treningowe | – | 20/20 | 9.5 s | – | – | 1.87 [1.99] | 0.16 [0.37] | 10.4 | 0.40 |
+| P8 / 8.065 Hz / lab, d=0 | – | 20/20 | 33.1 s | – | – | 1.44 [1.59] | 1.10 [1.27] | 7.7 | 0.46 |
+| P8 / 8.065 Hz / lab, d=1 | – | 20/20 | 41.2 s | – | – | 1.43 [1.72] | 0.99 [1.67] | 8.0 | 0.47 |
+| P8, d=0 | EMA α=0.7 | 20/20 | 40.3 s | 1.5 | 0 | 1.23 [1.42] | 0.88 [1.31] | 7.0 | 0.37 |
+| P8, d=0 | EMA α=0.5 | 20/20 | 41.6 s | 5.5 | 1 | 1.03 [1.15] | 0.62 [0.97] | 6.0 | 0.27 |
+| P8, d=0 | EMA α=0.3 | 17/20 | 60.4 s | 12.8 | 5 | 0.95 [1.04] | 0.44 [0.66] | 5.8 | 0.21 |
+
+Przebieg epizodu (ziarno 1234, `logs/board_6dof/arm_p8/jitter/trace_p20_vs_p8_seed1234.png`):
+w P8 moduł prędkości TCP leży prawie stale na limicie 0.2 m/s, a składowe x/y/z przeskakują
+między ±0.2 m/s z kroku na krok. Akcje mają charakter przełączania −1 ↔ +1 (bang-bang). W P przy
+20 Hz składowe prędkości zmieniają się płynnie, a amplituda `tremor_mm` wynika głównie z faz
+docisku i odjazdu od przycisku. Liczba zawróceń kierunku TCP jest w P8 ok. 7 razy większa
+(1.10 wobec 0.16 na sekundę). Wideo w czasie rzeczywistym (25 kl./s, klatki także między krokami
+sterowania, ziarna 1234–1236): `logs/board_6dof/arm_p8/video/p8_lab_8hz_d0.mp4`.
+
+Filtr EMA na akcji po stronie wdrożenia (`--action-ema`) zmniejsza drgania (α=0.5: `tremor_mm`
+1.44 → 1.03, zawrócenia 1.10 → 0.62/s), ale kosztem kolizji z tablicą (1.2 → 5.5 kroku/ep),
+a przy α=0.3 spada sukces (17/20). Drgania nie znikają: polityka jest trenowana bez filtra
+i działa przełączająco, więc filtr po fakcie zaburza jej pętlę zamkniętą.
+
+`watch_board.py` dostał flagi sceny sprzętowej (`--gripper`, `--button-xml`, `--twist-limits`,
+`--joint-vel`, `--control-freq`, `--dilate-obs`) i `--realtime` (klatki co N kroków fizyki,
+odtwarzanie w czasie rzeczywistym).
+
+### 6.73. Ramię P8F: filtr akcji w pętli treningowej (chmura, start 2026-11-11)
+
+Filtr EMA nałożony tylko przy wdrożeniu zmniejszał drgania P8 kosztem kolizji (6.72), bo polityka
+nie znała filtra. Filtr staje się więc częścią dynamiki środowiska, a polityka uczy się sterować
+przez niego. Most na sprzęcie stosuje ten sam filtr.
+
+- Kod: `ButtonBoardEnv(action_ema=α)`: `a ← α·a + (1−α)·a_prev` na sześciu składowych ramienia,
+  stan startowy zero („stój”), nakładany po zapisaniu `_raw_action` (kary dotyczą wyjścia polityki,
+  jak przy opóźnieniu) i przed kolejką opóźnienia (kolejność sprzętowa: filtr w moście, potem
+  transport). Kontrola z opóźnieniem 1 i akcjami +1, −1, +1, −1: sterownik dostaje 0, 0.5,
+  −0.25, 0.375. Klucz configu `action_ema`; w `compare_models.py` i `watch_board.py` flaga
+  `--env-action-ema` (odrębna od `--action-ema`, filtra po stronie wdrożenia).
+- Start `arm_p8` 122 123 552, **+8M**, cel 130 123 552 (`training/configs/arm_p8f.yaml`, α = 0.5,
+  reszta jak P8). Instancja `kinova-arm-p8f`, typ standard, checkpoint startowy
+  `start/arm_p8_122123552.zip`; test dymny lokalnie: wznowienie od 122.12M.
+- Nagroda bez zmian.
+
+Kryterium zapisane przed biegiem (n=100, h=2000 przy 8.065 Hz, limity labu, postój −0.43,
+skalowanie prędkości w obserwacji, filtr włączony, d=0 i d=1): sukces ≥ 90/100; epizody
+z kontaktem ze Spotem ≤ 5/100; kroki kolizji z tablicą ≤ 2.0 na epizod; czas do sukcesu
+≤ 800 kroków; drgania (`jitter_check.py`, n=20, d=0 i d=1): mediana zawróceń kierunku TCP
+≤ 0.3/s i mediana `tremor_mm` ≤ 1.0 mm.
+
+**Wynik P8F (2026-11-13).** Checkpoint 130 123 552, n=100, h=2000 przy 8.065 Hz, limity labu,
+postój −0.43, skalowanie prędkości w obserwacji, filtr EMA 0.5 w pętli, ziarna 1234+, scena z bryłą
+kamery labu (6.74); drgania `jitter_check.py`, n=20 (`logs/board_6dof/arm_p8f/`):
+
+| warunek | próg | d=0 | d=1 |
+|---|---|---|---|
+| sukces | ≥ 90/100 | 99/100 ✓ | 100/100 ✓ |
+| epizody z kontaktem ze Spotem | ≤ 5/100 | 0/100 ✓ | 0/100 ✓ |
+| kroki kolizji z tablicą / ep | ≤ 2.0 | 1.0 ✓ | **3.0 ✗** |
+| czas do sukcesu | ≤ 800 kroków | 211 (26.1 s) ✓ | 237 (29.4 s) ✓ |
+| mediana zawróceń TCP | ≤ 0.3/s | **0.41 ✗** | 0.25 ✓ |
+| mediana `tremor_mm` | ≤ 1.0 mm | 0.94 ✓ | 0.83 ✓ |
+
+Kryterium niespełnione w dwóch z dwunastu punktów. Względem P8 (6.71–6.72) P8F jest lepszy w każdej
+mierze: zawrócenia TCP 1.10 → 0.41/s (d=0), drżenie 1.44 → 0.94 mm, czas 36 → 26 s, kontakt ze Spotem
+3–4 → 0/100, kolizje przy d=1 3.7 → 3.0. Prześwit do Spota poza startem min 2.8 cm (d=1). Filtr
+w pętli zmniejszył drgania bez kosztu w skuteczności, w przeciwieństwie do filtra nakładanego tylko
+przy wdrożeniu (6.72). P8F zastępuje P8 jako model na sprzęt; to, czy wiążący jest wynik przy d=0
+czy d=1, rozstrzygnie pomiar martwego czasu na sprzęcie (krok pętli 124 ms). Nagranie:
+`logs/board_6dof/arm_p8f/video/p8f_lab_8hz_d0.mp4`.
+
+### 6.74. Zmierzona kamera przednia labu (2026-11-12)
+
+Kamera na przedzie Spota to głowica ToF ifm O3R (etykieta M04533, „PMD 3D ToF Depth Camera
+43k”; obudowa rodziny O3R ok. 90 × 31 × 26 mm). Pomiar taśmą w labie, od osi podstawy ramienia:
+przód kamery 10 cm, tył 7.5 cm, górna krawędź 4.5 cm nad grzbietem Spota. Model treningowy
+od 6.42 zawiera listwę Kinecta 28 cm (X +0.209…+0.273, górna krawędź +1.2 cm), więc kamera labu
+leży bliżej podstawy i wyżej niż bryła w symulacji.
+
+- Kod: `ButtonBoardEnv(lab_cam_box=[x0, x1, y0, y1, z0, z1])` dodaje prostopadłościan
+  `spot_labcam_collision` (układ podstawy ramienia) obok listwy Kinecta; kontakt liczy się jako
+  kontakt ze Spotem. Flaga `--lab-cam-box` w `compare_models.py`/`watch_board.py`, klucz
+  `lab_cam_box` w configu. `spot_clearance.py` podaje prześwit osobno dla każdej bryły Spota.
+- Bryła z zapasem 1.5 cm z każdej strony: X 0.060…0.115, Y ±0.100, Z −0.030…+0.060 m. Listwa
+  Kinecta zostaje jako bufor nad zderzakiem.
+
+Ocena (n=50, h=2000 przy 8.065 Hz, limity labu, postój −0.43, skalowanie prędkości w obserwacji,
+ziarna 1234+, `logs/board_6dof/labcam/`):
+
+| model | d | sukces | czas [s] | kolizje/ep | kontakt Spot | prześwit do kamery labu: start / min | prześwit min (wszystkie bryły) |
+|---|---|---|---|---|---|---|---|
+| P8 122.12M | 0 | 49/50 | 35.5 | 1.5 | 3/50 | 9.2 / **−1.8** cm | −7.6 cm |
+| P8 122.12M | 1 | 50/50 | 43.7 | 4.3 | 2/50 | 8.9 / 4.9 cm | −1.7 cm |
+| P8F 128.42M (EMA 0.5) | 0 | 50/50 | 26.7 | 1.7 | **0/50** | 9.2 / 9.9 cm | 2.5 cm |
+| P8F 128.42M (EMA 0.5) | 1 | 50/50 | 31.4 | 3.3 | **0/50** | 8.9 / 9.7 cm | 4.5 cm |
+
+Wnioski:
+- Kamera labu nie leży na torze ruchu P8F: najmniejszy prześwit do bryły z zapasem (9.7 cm)
+  jest równy prześwitowi w pozie startowej, więc ramię od niej tylko się oddala. Wiążącym
+  ograniczeniem pozostaje listwa Kinecta (min 2.5 cm), która działa jako bufor nad przodem Spota.
+- P8 jeden raz wszedł w bryłę z zapasem (−1.8 cm, czyli ok. 0.3 cm w samą kamerę) — kolejny powód,
+  by na sprzęt szedł P8F.
+- Pośredni checkpoint P8F przy 128.42M: 0 kontaktów ze Spotem, czas krótszy o 9–12 s niż P8.
+  Kolizje przy d=1 (3.3/ep) nadal powyżej progu 2.0 z kryterium 6.73; rozliczenie kryterium
+  dopiero na końcowym checkpoincie (n=100).
+- Trening nie wymaga zmiany sceny; kolejne biegi mogą mieć `lab_cam_box` włączone bez kosztu.
+
+### 6.75. Sesja w labie 2026-11-12: sterownik, tematy, zapisane pozy
+
+Odczyty bez ruchu ramienia (laptop przez zenoh, `ssh max1`), wyniki w
+`docs/lab_session_checklist_pl.md` i `logs/hw/2026-11-12/`.
+
+**Sieć i tematy.** Ping laptop → max1 (200 pakietów): śr. 1.26 ms, max 4.2 ms, 0 strat.
+`/joint_states` publikuje `kinova_js_publisher` z ok. 1 kHz: 6 stawów ramienia i 6 stawów 2F-140
+(`finger_joint` 0.699 = zamknięty); pole `velocity` w spoczynku zerowe (wypełnienie w ruchu
+nierozstrzygnięte); kąty w `[0, 2π)`. W jednym pomiarze wystąpiły przerwy do 0.56 s, co przy pętli
+8 Hz oznacza 4–5 kroków bez świeżej obserwacji — most wymaga strażnika wieku obserwacji.
+Temat `/twist_controller/commands` (TwistStamped, RELIABLE, głębokość 1) subskrybuje węzeł
+`kortex_omni_controller`; publikuje na nim już `spot_controller` (ścieżka joysticka), więc most
+byłby drugim wydawcą.
+
+**Kod sterownika (`kortex_ros2_python/kortex_omni_control.py`).** Potwierdzone: skala ×0.5,
+martwa strefa 0.05 na wszystkich składowych, ramka TOOL, `SINGLE_LEVEL_SERVOING`. Zatrzymanie po
+braku wiadomości: timer 20 Hz i próg 0.2 s, czyli 0.20–0.25 s. `cmd_vel_cb` wysyła
+`SendTwistCommand` dwukrotnie na wiadomość (zduplikowany blok). Sterownik udostępnia też akcję
+`FollowJointTrajectory`, wykonywaną strumieniowaniem pozycji stawów z 1 kHz w trybie
+niskopoziomowym — sprzętową ścieżkę dla polityki pozycyjnej (rozdział 9). `/goto_position`
+wykonuje akcję zapisaną w robocie po nazwie. `robot_state_publisher` jest w launchu wyłączony,
+więc w TF nie ma `gen3_base_link`; stała ramka `end_effector_link → tool_tip` ma 0.17 m. Launch
+ustawia `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` (stary kod protobuf w `kortex_api`); to
+samo wymaga `ros2_bridge/tools/kortex_limits.py`, który czyta limity z serwisu `ControlConfig`
+(nie `Base`) i z flagą `--actions` listuje zapisane akcje.
+
+**Zapisane pozy (stopnie Web App) i prześwit w symulacji** (postój −0.43, 2F-140, korpus Spota,
+listwa Kinecta jako bufor, kamera ifm z 6.74; `training/lab_pose_clearance.py`, render
+`training/render_lab_poses.py` → `logs/hw/2026-11-12/poses_sim.png`):
+
+| poza | stawy [°] | TCP przód / góra od podstawy [m] | min. prześwit |
+|---|---|---|---|
+| start RL | 0, 84.2, 231.6, 179.9, 244.3, 180 | 0.61 / 0.02 | 1.0 cm (nadgarstek – listwa) |
+| Home | 0, 15, 230, 0, 55, 90 | 0.66 / 0.42 | 9.9 cm |
+| nuc | 0, 254.5, 212.2, 0, 298.8, 90 | 0.18 / 0.32 | 9.9 cm |
+| Retract | 0, 340, 214, 0, 310, 90 | 0.14 / 0.11 | 4.6 cm (chwytak – kamera ifm) |
+| Crate | 0, 0, 212.2, 0, 7, 90 | 0.40 / 0.14 | 9.9 cm |
+| Packaging, Alien, Zero | — | ramię złożone | ≥ 9.9 cm |
+
+Konwencja kątów Web App pokrywa się z konwencją symulacji (zawinięcie do ±180°): kąty startu RL
+odtwarzają znany prześwit 1.0 cm. Poza spoczynkowa labu to ramię oparte o karton stale
+przymocowany do Spota za podstawą, `[0, 254.4, 204.0, 358.7, 314.5, 90.3]°` (blisko „nuc”);
+karton nie jest modelowany i leży poza obszarem pracy.
+
+Drogi do pozy startowej (liniowo w stawach, jak `REACH_JOINT_ANGLES`, obie strony obrotu j4):
+- spoczynek → start i nuc → start: najmniejszy prześwit dopiero w samej pozie startowej (1.0 cm);
+- **Home → start: palce chwytaka 0.5–2.6 cm w przodzie Spota** w połowie ruchu (zejście z dużej
+  wysokości z jednoczesnym obrotem nadgarstka o 180°);
+- Home → `[0, 15, 231.6, 179.9, 244.3, 180]` → start: 9.9 cm, potem 1.0 cm dopiero w pozie.
+
+Labowi przekazano prośbę o zapisanie akcji `rl_start` i `rl_via` (punkt pośredni).
+
+**Home jako poza startowa treningu — rozważona, odłożona.** Za: start ~10 cm od Spota zamiast
+1 cm (źródło wczesnych kontaktów w 6.68), poza znana operatorom i dostępna z joysticka, kamera
+nadgarstka skierowana poziomo na tablicę. Przeciw: inna gałąź nadgarstka (j4 = 0, j6 = 90) poza
+rozkładem P8F, więc konieczne dotrenowanie; ok. 40 cm dłuższa droga w dół (2–3 s przy 0.2 m/s);
+wymaga sprawdzenia stabilności OSC przy zerowej akcji (6.42). Wraca jako kolejny bieg (start
+losowany z obu póz), jeśli zmierzony prześwit w pozie startowej wyjdzie < 2 cm albo kontakty na
+starcie się utrzymają.
+
+**Inne.** Na max1 działa klasyczny potok wciskania E-stopu labu (`board_mapping_launch`,
+`auto_dex_nodes press_estop`, `visual_servo`) — punkt odniesienia dla porównania z polityką RL.
+Lab rozwija wersję sterownika w C++ (`kortex_ros2_cpp`). Panel z zaworami na ścianie stanowiska
+należy do innego projektu. Zadanie wykonywane jest przy stojącym Spocie.
+
+### 6.76. Ramię PS: losowa postawa Spota (chmura, start 2026-11-16)
+
+Wymóg: jeden model dla Spota leżącego, w półprzysiadzie i stojącego (stabilniejsza postawa leżąca
+daje sztywniejszą podstawę przy docisku grzybka, bliższą bryle z symulacji). Pomiar 12.11: przy
+leżącym Spocie spód podstawy Kinovy 20 cm nad podłogą; w scenie dotąd 62 cm (Spot stojący, wartość
+z TF Webotsa, na sprzęcie niezmierzona). Tablica bez zmian (środek 64 cm).
+
+- Kod (`ButtonBoardEnv`): `base_z_range=[lo, hi]` — wysokość podstawy losowana na epizod zamiast
+  `KINOVA_BASE_Z ± base_z_noise`; `standoff_keep_reach` — postój dobierany tak, by odległość
+  podstawy od środka tablicy pozostała nominalna, √(0.93² + 0.02²) m (Spot leżący podjeżdża
+  bliżej: oś podstawy 0.82 m od ściany przy 0.20 m, 0.90 m przy 0.40 m, 0.93 m przy 0.62 m);
+  `obs_base_relative` — pozycja końcówki w obserwacji liczona względem podstawy i zakotwiczona
+  w podstawie nominalnej (−0.43, 0.62), więc obserwacja nie zależy od tego, gdzie stoi Spot,
+  a przy postawie nominalnej jest identyczna z dotychczasową. Most liczy obserwacje w układzie
+  podstawy, więc używa stałego zakotwiczenia nominalnego. Flagi `--base-z-range`,
+  `--standoff-keep-reach`, `--obs-base-relative` w `compare_models.py`/`watch_board.py`.
+- Reguła postoju na sprzęcie: odległość osi podstawy od ściany d = √(0.93² − (0.64 − h)²),
+  h = wysokość spodu podstawy nad podłogą.
+
+P8F bez treningu przez postawy (n=20, d=0, h=2000 przy 8.065 Hz, limity labu, filtr 0.5,
+`logs/board_6dof/posture_sweep/`):
+
+| wysokość podstawy | sukces | czas [s] | kolizje/ep | kontakt Spot |
+|---|---|---|---|---|
+| 0.62 (stojący) | 20/20 | 28.2 | 0.8 | 0/20 |
+| 0.50 | 20/20 | 59.0 | 6.8 | 0/20 |
+| 0.40 | 15/20 | 77.4 | 29.2 | 3/20 |
+| 0.30 | 7/20 | 101.5 | 146.9 | 1/20 |
+| 0.20 (leżący) | 2/20 | 188.5 | 212.8 | 2/20 |
+
+Geometria jest osiągalna (2/20 sukcesów przy 0.20), ale polityka poza obwiednią treningu
+(±9 cm względnej wysokości) traci skuteczność i masowo dotyka tablicy.
+
+- Start `arm_p8f` 130 123 552, **+16M**, cel 146 123 552 (`training/configs/arm_ps.yaml`):
+  `base_z_range [0.20, 0.65]`, `standoff_keep_reach`, `obs_base_relative`, bryła kamery labu,
+  reszta jak P8F. Instancja `kinova-arm-ps` (standard), checkpoint startowy
+  `start/arm_p8f_130123552.zip`; test dymny lokalnie: wznowienie od 130.12M. Nagroda bez zmian.
+
+Kryterium zapisane przed biegiem (n=100, h=2000 przy 8.065 Hz, limity labu, filtr, d=0; wysokość
+podstawy 0.20, 0.40 i 0.62 m): sukces ≥ 90/100 na każdej wysokości i ≥ 95/100 przy 0.62 (bez
+regresji względem P8F); epizody z kontaktem ze Spotem ≤ 5/100; kroki kolizji z tablicą ≤ 2.0 na
+epizod; czas do sukcesu ≤ 800 kroków. d=1 i drgania raportowane, nie rozstrzygają. Kontrola po 4M:
+skuteczność oceny w trakcie treningu musi rosnąć. Górna granica 0.65 m wymaga potwierdzenia
+pomiarem wysokości stojącego Spota.
+
+Wynik (koniec 146 123 552, VM wyłączona sama 19.11; `logs/board_6dof/arm_ps/eval_n100/`,
+checkpoint `logs/board_6dof/arm_ps/checkpoints/ppo_board_146123552_steps.zip`, kopia
+`models/arm_ps_146123552.zip`). Kontrola po 4M spełniona: porażki w ocenie w trakcie treningu
+32 % (130.3–131.1M) → 8 % (133.3–134.1M) → 0 % (140.9–141.7M).
+
+| wysokość podstawy | d | sukces | czas [s] | kolizje/ep | kontakt Spot | porażki wg wciśnięć (0..4) |
+|---|---|---|---|---|---|---|
+| 0.62 | 0 | 100/100 | 26.9 | 1.0 | 0/100 | — |
+| 0.40 | 0 | 100/100 | 24.2 | 1.1 | 0/100 | — |
+| 0.20 | 0 | 92/100 | 42.5 | **19.6** | 4/100 | [1, 0, 2, 4, 1] |
+| 0.62 | 1 | 100/100 | 30.6 | 1.7 | 0/100 | — |
+| 0.20 | 1 | 99/100 | 47.2 | 13.3 | 1/100 | [0, 0, 1, 0, 0] |
+
+Rozliczenie kryterium (d=0): sukces ≥ 90/100 na każdej wysokości ✓ (92/100 przy 0.20), ≥ 95/100
+przy 0.62 ✓; kontakt ze Spotem ≤ 5/100 ✓ (4/100 przy 0.20); czas ≤ 800 kroków ✓; kolizje
+≤ 2.0 kroku/ep ✗ przy 0.20 (19.6; przy 0.40 i 0.62 1.1 i 1.0). Kryterium niespełnione w 1
+z 12 punktów. Względem P8F bez treningu przy 0.20: 2/20 → 92/100, kolizje 213 → 19.6. Przy
+0.62 brak regresji (P8F 99/100, 1.0). Przy 0.20 d=1 lepsze od d=0 (99 vs 92/100) — różnica
+w granicach rozrzutu przy 8 porażkach.
+
+### 6.77. Most dla P8F/PS na sterowniku labu (2026-11-19)
+
+Cel: uruchomić politykę 8 Hz (P8F/PS, chwytak 2F-140) na sterowniku labu `kortex_ros2_python`
+zamiast `ros2_kortex`, pod który most był pisany (`arm_d`, 20 Hz, 2F-85, TF i przełączanie
+kontrolerów).
+
+Wybór sterownika: `ros2_kortex` przełącza ramię w tryb LOW_LEVEL i nie może działać obok
+sterownika labu (znikają `/goto_position`, Steam Deck, narzędzia labu), wymaga instalacji
+`ros2_control` z apt na max1, a docelowo lab i tak używa własnego sterownika. Pomiary z 18.11
+(6.75, punkt 3 checklisty) nie dały powodu do zmiany: martwy czas 30–80 ms, płynny ruch przy
+8 Hz, zero zatrzymań przez Wi-Fi, prędkości stawów w `/joint_states`. Jedynym ryzykiem była
+martwa strefa 0.05 (patrz niżej).
+
+Zmiany:
+- `training/train_board.py`: składanie argumentów env wydzielone do `env_kwargs_from_cfg(cfg)`
+  (blok identyczny); most, `fit_twist_filter.py` i `verify_obs_core.py --scene` budują env tak
+  samo jak trening.
+- `ros2_bridge/core/obs_core.py`: sceny `p8f`/`ps` z configów treningowych, z wyłączonym szumem
+  i podstawą nominalną (przy `obs_base_relative` przesunięcie zerowe, więc jedynym wejściem
+  zależnym od postawy jest położenie tablicy w układzie podstawy); offset punktu chwytu od
+  kołnierza liczony z modelu (2F-85 0.145 m, 2F-140 0.2075 m); mediany chwytaka 2F-140
+  z epizodów; `posture_board_pose(h)` — tablica według reguły postoju z 6.76; `RefPlant`
+  (niżej).
+- Weryfikacja B0 (`verify_obs_core.py --scene ps`, env z losową postawą 0.34–0.47 m i szumem
+  tablicy): wszystkie bloki obserwacji identyczne z env (0.0), poza `target_rel` ≤ 6 mm =
+  ugięcie grzybka (z ugięciem 8·10⁻⁵).
+- `ros2_bridge/robots/labpy.py` (backend `labpy`): TwistStamped ×2 (sterownik mnoży przez 0.5)
+  w ramie narzędzia z FK treningowej (labowi brakuje `gen3_base_link` w TF), przesunięcie punktu
+  chwytu (0.2075 m) do TCP z Web App (0.20 m), jawne zero na koniec (ścieżka „centered”
+  sterownika, bez 0.5 s wybiegu), dojazd na start zapisanymi akcjami po trasie
+  nuc → Home → `rl_via` → `rl_start` z czekaniem na `/goto_position/result`, kontrola pozy
+  startowej zamiast kontroli FK vs TF, `--no-send` (liczy, nic nie publikuje), odjazd 8 cm od
+  tablicy po pętli.
+- `bridge_node.py`: `--scene arm_d|p8f|ps`, `--model`, częstotliwość pętli z configu (8.065 Hz),
+  `--base-height` (tablica według reguły postoju), watchdog ≥ 1.5 okresu pętli (inaczej zera
+  szły między krokami 124 ms), `--press-topic` (przełączanie celów na zdarzenie wciśnięcia,
+  std_msgs/Int32), licznik komend w martwej strefie.
+- Narzędzia: `ros2_bridge/tools/mock_labpy.py` (atrapa sterownika labu z fizyką: scena treningowa
+  z tablicą i grzybkami, serwo stawów śledzące twist z opóźnieniem Kortexa, własny zegar
+  `/clock`), `ros2_bridge/tools/bag_to_npz.py`, `training/fit_twist_filter.py`.
+
+Akcja → twist. Polityka wydaje deltę OSC, ramię przyjmuje prędkość; mapowanie przeszło trzy
+wersje, rozstrzygane w zamkniętej pętli z atrapą:
+
+| mapowanie | wynik w atrapie (5 celów) | uwagi |
+|---|---|---|
+| wzmocnienia per oś (0.21/0.12/0.16 m/s, 1.63/1.52/1.30 rad/s na jednostkę po EMA) | 0/5 | kierunek ruchu liniowego zgodny z symulacją w medianie tylko cos 0.68 |
+| macierz 6×6 z testów skoku w 45 pozach polityki | 5/5 w jednej kolejności, 2–3/5 w innych | OSC sprzęga obrót z ruchem punktu chwytu: v_y ← e_wz 0.35, v_z ← e_wy −0.21; cos 0.95 |
+| `RefPlant`: model treningowy z mierzonego stanu | patrz niżej | w ruchu swobodnym mediana błędu prędkości 3 mm/s, krok ~30 ms |
+
+`RefPlant` ustawia model treningowy w zmierzonym stanie (q, q̇), przepuszcza akcję przez ten sam
+łańcuch co trening (EMA 0.5 w pętli, OSC, limity prędkości i przyspieszeń) przez jeden okres
+i wysyła średni twist punktu chwytu z tego okresu; kontakty w modelu są wyłączone (tablicę daje
+fizyka). Bez dodatkowego filtra pierwszego rzędu: w symulacji wyjście EMA dochodzi do punktu
+chwytu ze stałą 50–170 ms, na Gen3 twist po ~60 ms martwego czasu i stałej ~85 ms (bag
+`logs/hw/2026-11-18/step`); filtr w moście liczyłby opóźnienie podwójnie.
+
+Martwa strefa sterownika: w 2298 krokach P8F (10 epizodów) ani jedna komenda nie wpadła poniżej
+progu; prędkość punktu chwytu w ostatnich 5 cm przed celem ma medianę 0.16 m/s. Prośba do labu
+o temat bez martwej strefy nie jest potrzebna.
+
+Atrapa z fizyką (P8F i PS, `RefPlant`, przełączanie na zdarzenie wciśnięcia): 3/5 celów
+(P8F przy 0.62; PS przy 0.62), wobec 99–100/100 w symulacji treningowej. Duże kąty ustawienia
+narzędzia, początkowo podejrzane, występują też w treningu (mediany 14/38/58/83/69° dla btn0–4,
+P8F, kolejność 0–4): polityka wciska boczne grzybki bokiem palców 2F-140, a wciśnięcie pada przy
+punkcie chwytu 2–8 cm od środka grzybka. Przełączanie celów po odległości (< 1.5 cm) jest więc
+nieprzydatne; na sprzęcie przełącza detekcja wciśnięcia (kamera, operator). Pozostała różnica
+wobec symulacji to zachowanie w kontakcie (sztywne serwo atrapy wobec podatnego OSC) — atrapa
+tego nie rozstrzyga, rozstrzygnie próba na sprzęcie.
+
+Trasa na start przy leżącym Spocie (najmniejszy odstęp od tablicy, symulacja, tablica na obecnej
+wysokości, postój według reguły z 6.76):
+
+| wysokość podstawy | nuc → Home | Home → `rl_via` | `rl_via` → `rl_start` |
+|---|---|---|---|
+| 0.20 | 4.1 cm | 2.0 cm | **−1.9 cm (grzybek btn0)** |
+| 0.30 | 8.3 | 3.7 | 1.1 |
+| 0.40 | 12.6 | 9.3 | 4.3 |
+| 0.62 | 12.6 | 12.6 | 5.0 |
+
+Sama poza `rl_start` jest wolna na każdej wysokości (≥ 1.0 cm, w tym Spot). Przy leżącym Spocie
+opuszczanie ramienia z `rl_via` przecina środkowy grzybek; poza pośrednia ze zgiętym łokciem
+wchodzi w korpus Spota (−13…−15 cm). Procedura zgodna z treningiem: trasa na start, gdy Spot
+stoi 0.93 m od ściany (odstęp od tablicy ≥ 11 cm), podejście do 0.82 m z ramieniem w `rl_start`
+(≥ 5.5 cm), położenie się (odstęp rośnie do 19.5 cm). Spot położony w miejscu, na 0.93 m, ma
+środek tablicy 1.03 m od podstawy zamiast trenowanych 0.93 m — poza rozkładem treningu PS.
+
+Uruchomienie (laptop przez zenoh albo max1; atrapa wyłącznie na lokalnym RMW):
+```bash
+source /opt/ros/humble/setup.bash
+# etap 0: ramię w rl_start, polityka liczy, nic nie wysyła
+~/miniconda3/envs/robosuite/bin/python ros2_bridge/bridge_node.py --scene ps --backend labpy \
+  --no-send --base-height 0.20 --steps 40
+# atrapa (osobny terminal, lokalny RMW: RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_LOCALHOST_ONLY=1)
+~/miniconda3/envs/robosuite/bin/python ros2_bridge/tools/mock_labpy.py --scene ps --start nuc --base-height 0.62
+~/miniconda3/envs/robosuite/bin/python ros2_bridge/bridge_node.py --scene ps --backend labpy --home \
+  --sequence 0,1,2,3,4 --press-topic /estop_pressed --no-wall --steps 1500
+```
+
+### 6.78. Ramię PH: PS ze startem z pozy Home (chmura, start 2026-11-19)
+
+Powody: (1) PS przy leżącym Spocie nie spełnił kryterium kolizji (19.6 kroku/ep przy 0.20 m,
+6.76); (2) trasa na `rl_start` przy leżącym Spocie przecina środkowy grzybek (6.77). Home to
+zapisana akcja labu, osiągana z nuc bez obrotu nadgarstka nad Spotem; start z niej usuwa
+odcinek `rl_via` → `rl_start`. Wcześniej (6.75) start z Home odłożono jako wymagający
+dotrenowania.
+
+- Odstępy pozy Home (symulacja, postój według reguły 6.76): od Spota 9.9 cm na każdej wysokości;
+  od tablicy 4.1 cm przy 0.20 m, 8.3 przy 0.30, 13.6 przy 0.40, 20.9 przy 0.50, 26.3 przy 0.62.
+  Punkt chwytu w Home 0.66 m przed i 0.42 m nad podstawą — przy leżącym Spocie na wysokości
+  tablicy.
+- Start `arm_ps` 146 123 552, **+16M**, cel 162 123 552 (`training/configs/arm_ph.yaml`); jedyna
+  zmiana: `init_qpos` = Home [0, 0.2618, −2.2689, 0, 0.9599, 1.5708] rad. Instancja
+  `kinova-arm-ph` (standard), checkpoint startowy `start/arm_ps_146123552.zip`; test dymny
+  lokalnie: wznowienie od 146.12M, epizody ze startu w Home początkowo do limitu 2000 kroków.
+- Most: scena `ph`, start przez `/goto_position` do Home (backend dobiera zapisaną akcję równą
+  `init_qpos` sceny).
+
+Kryterium zapisane przed biegiem (n=100, h=2000 przy 8.065 Hz, limity labu, filtr, d=0, start
+Home; wysokość podstawy 0.20, 0.40 i 0.62 m): sukces ≥ 95/100 na każdej wysokości; kroki kolizji
+z tablicą ≤ 2.0 na epizod na każdej wysokości; epizody z kontaktem ze Spotem ≤ 5/100; czas do
+sukcesu ≤ 800 kroków. d=1 i drgania raportowane, nie rozstrzygają. Kontrola po 4M: skuteczność
+oceny w trakcie treningu musi rosnąć.
 
 ## 7. Napotkane problemy techniczne i rozwiązania
 

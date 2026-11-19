@@ -18,9 +18,10 @@ class ButtonObject(MujocoXMLObject):
 
     ACTIVATION_THRESHOLD = 0.012  # metres — button considered pressed
 
-    def __init__(self, name):
+    def __init__(self, name, xml="button.xml"):
+        # xml: "button.xml" (training scenes up to arm_d) or "button_lab.xml" (lab boxes)
         super().__init__(
-            fname=os.path.join(ASSET_DIR, "xml/button.xml"),
+            fname=os.path.join(ASSET_DIR, "xml", xml),
             name=name,
             joints=None,  # static object; spring joint is inside the body
             obj_type="all",

@@ -9,7 +9,7 @@ joint_trajectory_controller. It ignores the twist topic itself, where its own
 zeros would look like a live bridge.
 
 Start BEFORE the bridge, in its own terminal:
-  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/deadman.py
+  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/tools/deadman.py
 """
 
 import argparse

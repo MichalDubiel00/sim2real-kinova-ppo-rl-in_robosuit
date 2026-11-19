@@ -8,7 +8,7 @@ command; --dead / --tau / --gain), JTC homing, list/switch_controller.
 Kinematics come from the training model (ObsCore), so this tests bridge logic,
 not the real robot's kinematics.
 
-  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/mock_kortex.py --dead 0.04 --tau 0.06 --gain 0.95
+  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/tools/mock_kortex.py --dead 0.04 --tau 0.06 --gain 0.95
 """
 
 import sys
@@ -29,7 +29,7 @@ from tf2_ros import TransformBroadcaster
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from controller_manager_msgs.msg import ControllerState
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core"))
 from obs_core import ObsCore, SCENE_ARM_D, _quat2mat, wrap_pi
 
 JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]

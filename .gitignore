@@ -27,5 +27,6 @@ MUJOCO_LOG.TXT
 .DS_Store
 core
 core.*
+!ros2_bridge/core/
 
 .claude/settings.local.json

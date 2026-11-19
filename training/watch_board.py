@@ -114,6 +114,28 @@ def parse_args():
     parser.add_argument("--no-finger-gate", action="store_true",
                         help="disables the finger-contact requirement for a press")
     # --- recording ---
+    parser.add_argument("--gripper", type=str, default="Robotiq85Gripper")
+    parser.add_argument("--button-xml", type=str, default="button.xml")
+    parser.add_argument("--twist-limits", type=str, default=None, metavar="LIN,ANG",
+                        help="tool caps with --kinova-limits (lab: 0.2,0.349)")
+    parser.add_argument("--joint-vel", type=float, default=None, metavar="RAD_S",
+                        help="joint cap with --kinova-limits (lab: 0.873)")
+    parser.add_argument("--control-freq", type=float, default=20)
+    parser.add_argument("--base-z-range", type=lambda x: [float(t) for t in x.split(",")], default=None,
+                   metavar="LO,HI", help="arm base height range per episode, Spot posture (docs 6.76)")
+    parser.add_argument("--standoff-keep-reach", action="store_true",
+                   help="move Spot to keep the nominal base-board distance (docs 6.76)")
+    parser.add_argument("--obs-base-relative", action="store_true",
+                   help="EEF position observed relative to the arm base (docs 6.76)")
+    parser.add_argument("--lab-cam-box", type=lambda v: [float(x) for x in v.split(",")], default=None,
+                   metavar="X0,X1,Y0,Y1,Z0,Z1", help="measured lab front camera box, arm base frame (docs 6.74)")
+    parser.add_argument("--env-action-ema", type=float, default=None, metavar="ALPHA",
+                        help="in-loop action low-pass, as trained (docs 6.73)")
+    parser.add_argument("--dilate-obs", action="store_true",
+                        help="scale velocity observations by 20/control_freq (docs 6.71)")
+    parser.add_argument("--realtime", action="store_true",
+                        help="grab frames between control steps at --fps of simulated time; "
+                             "one frame per control step would hide motion inside a step")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=10,
@@ -170,10 +192,12 @@ def main():
         activation_depth=args.activation_depth,
         force_gripper_closed=not args.free_gripper,
         finger_press_gate=not args.no_finger_gate,
-        joint_vel_limits=(KINOVA_JOINT_VEL if args.kinova_limits
-                          else HW_JOINT_VEL if args.hw_limits else None),
+        joint_vel_limits=(([args.joint_vel] * 6 if args.joint_vel else KINOVA_JOINT_VEL)
+                          if args.kinova_limits else HW_JOINT_VEL if args.hw_limits else None),
         joint_vel_limit_mode=("scale" if args.kinova_limits else "clip"),
-        eef_twist_limits=(KINOVA_TWIST if args.kinova_limits else None),
+        eef_twist_limits=((tuple(float(x) for x in args.twist_limits.split(","))
+                           if args.twist_limits else KINOVA_TWIST)
+                          if args.kinova_limits else None),
         **({"base_x_offset": args.base_x_offset} if args.base_x_offset is not None else {}),
         init_qpos=([float(x) for x in args.init_qpos.split(",")] if args.init_qpos else None),
         joint_acc_limits=([5.2, 5.2, 5.2, 10.0, 10.0, 10.0] if args.acc_limits else None),
@@ -183,6 +207,15 @@ def main():
         spot_front_cam=args.spot_front_cam,
         button_stiffness=args.button_stiffness,
         button_estop_profile=estop_prof,
+        gripper_types=args.gripper,
+        button_xml=args.button_xml,
+        control_freq=args.control_freq,
+        obs_vel_scale=(20.0 / args.control_freq if args.dilate_obs else 1.0),
+        action_ema=args.env_action_ema,
+        lab_cam_box=args.lab_cam_box,
+        base_z_range=args.base_z_range,
+        standoff_keep_reach=args.standoff_keep_reach,
+        obs_base_relative=args.obs_base_relative,
     )
     env.reset()
     if not args.record:
@@ -202,7 +235,7 @@ def main():
     else:
         seeds = [None] * args.episodes
 
-    frame_every = max(1, round(20 / max(args.fps, 1)))  # control_freq 20 Hz
+    frame_every = max(1, round(args.control_freq / max(args.fps, 1)))
 
     # Frames go straight to disk (keeping them in memory OOMed at 11 GB, 2026-10-10).
     tmp_dir = n_frames = None
@@ -213,6 +246,29 @@ def main():
         tmp_dir = f"/tmp/watch_board_frames_{os.getpid()}"
         os.makedirs(tmp_dir, exist_ok=True)
         n_frames = 0
+
+    def grab():
+        nonlocal n_frames
+        Image.fromarray(env.sim.render(
+            camera_name=args.camera,
+            width=args.width, height=args.height)[::-1]
+        ).save(f"{tmp_dir}/{n_frames:06d}.png")
+        n_frames += 1
+
+    if args.record and args.realtime:
+        every = max(1, round(1.0 / (args.fps * env.model_timestep)))
+        args.fps = 1.0 / (every * env.model_timestep)  # exact real-time playback
+        update, count = env._update_observables, [0]
+
+        def update_and_grab(force=False):
+            update(force)
+            if not force:
+                count[0] += 1
+                if count[0] % every == 0:
+                    grab()
+
+        env._update_observables = update_and_grab
+
     for ep, seed in enumerate(seeds):
         if seed is not None:
             # same seeding as compare_models.py, so a CSV episode can be replayed
@@ -228,12 +284,8 @@ def main():
             total += reward
             t += 1
             if args.record:
-                if t % frame_every == 0:
-                    Image.fromarray(env.sim.render(
-                        camera_name=args.camera,
-                        width=args.width, height=args.height)[::-1]
-                    ).save(f"{tmp_dir}/{n_frames:06d}.png")
-                    n_frames += 1
+                if not args.realtime and t % frame_every == 0:
+                    grab()
             else:
                 env.render()
         print(f"Episode {ep} (seed={seed}): steps={t}, reward={total:.3f}, "

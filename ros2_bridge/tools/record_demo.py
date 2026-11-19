@@ -3,7 +3,7 @@
 Webots demo recording: Gen3 wrist camera (with ArUco overlay) | Spot Kinect, to MP4.
 Runs beside bridge_node.py without affecting its loop.
 
-  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/record_demo.py --out docs/video/x.mp4 --seconds 60
+  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/tools/record_demo.py --out docs/video/x.mp4 --seconds 60
 """
 
 import argparse
@@ -17,7 +17,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core"))
 import aruco_board as AB
 
 

@@ -98,7 +98,7 @@ def run_episode(env, model, seed, action_ema=None):
     }
 
 
-def summarize(label, rows):
+def summarize(label, rows, hz=20.0):
     succ = np.array([r["success"] for r in rows])
     steps = np.array([r["steps"] for r in rows])
     coll = np.array([r["coll_steps"] for r in rows])
@@ -112,7 +112,7 @@ def summarize(label, rows):
     print(f"successes:                {succ.sum()}/{n} ({100*succ.mean():.0f}%)")
     if succ.any():
         print(f"mean time to success:     {steps[succ].mean():.0f} steps "
-              f"({steps[succ].mean()/20:.1f} s at 20 Hz)")
+              f"({steps[succ].mean()/hz:.1f} s at {hz:g} Hz)")
     print(f"episodes with collision:  {(coll > 0).sum()}/{n}")
     print(f"mean collision steps/ep:  {coll.mean():.1f}")
     spot = np.array([r.get("spot_steps", 0) for r in rows])
@@ -158,6 +158,12 @@ def parse_args():
     p.add_argument("--kinova-limits", action="store_true",
                    help="Gen3 R07 limits for twist mode: joints 1.39/1.22 rad/s "
                         "scaled proportionally + tool 0.5 m/s, 0.8727 rad/s (docs 6.37)")
+    p.add_argument("--twist-limits", type=str, default=None, metavar="LIN,ANG",
+                   help="with --kinova-limits: tool caps [m/s, rad/s] instead of 0.5,0.8727 "
+                        "(lab Web App, Cartesian Joystick: 0.2,0.349; docs 6.67)")
+    p.add_argument("--joint-vel", type=float, default=None, metavar="RAD_S",
+                   help="with --kinova-limits: one joint speed limit for all joints "
+                        "(lab Web App: 0.873 = 50 deg/s)")
     p.add_argument("--hw-limits", action="store_true",
                    help="apply Gen3 firmware joint velocity limits "
                         "(ros2_kortex joint_limits.yaml): 0.8727 rad/s on all joints")
@@ -223,6 +229,24 @@ def parse_args():
     p.add_argument("--spot-front-cam", action="store_true",
                    help="insert the front Spot camera (Kinect outline from Webots as a buffer): "
                         "28 cm wide bar, 21-27 cm in front of the base, at its height")
+    p.add_argument("--gripper", type=str, default="Robotiq85Gripper",
+                   help="Robotiq140Gripper = lab hardware (docs 6.66); arm_d trained with Robotiq85Gripper")
+    p.add_argument("--button-xml", type=str, default="button.xml",
+                   help="button_lab.xml = lab E-stop boxes, cap top 80 mm above the face (docs 6.66)")
+    p.add_argument("--control-freq", type=float, default=20,
+                   help="control loop rate [Hz]; steps in the output are at this rate")
+    p.add_argument("--base-z-range", type=lambda x: [float(t) for t in x.split(",")], default=None,
+                   metavar="LO,HI", help="arm base height range per episode, Spot posture (docs 6.76)")
+    p.add_argument("--standoff-keep-reach", action="store_true",
+                   help="move Spot to keep the nominal base-board distance (docs 6.76)")
+    p.add_argument("--obs-base-relative", action="store_true",
+                   help="EEF position observed relative to the arm base (docs 6.76)")
+    p.add_argument("--lab-cam-box", type=lambda v: [float(x) for x in v.split(",")], default=None,
+                   metavar="X0,X1,Y0,Y1,Z0,Z1", help="measured lab front camera box, arm base frame (docs 6.74)")
+    p.add_argument("--env-action-ema", type=float, default=None, metavar="ALPHA",
+                   help="in-loop action low-pass, as trained (docs 6.73); not --action-ema")
+    p.add_argument("--dilate-obs", action="store_true",
+                   help="scale velocity observations by 20/control_freq (docs 6.71)")
     p.add_argument("--action-ema", type=float, default=None, metavar="ALPHA",
                    help="low-pass filter on the action: a_t = alpha*a + (1-alpha)*a_{t-1}. "
                         "1.0 or unset = no filter. A deployment-side change - "
@@ -271,10 +295,12 @@ def main():
         joint_acc_limit_ref=args.acc_ref,
         joint_acc_limit_mode=args.acc_mode,
         action_delay_steps=args.action_delay,
-        joint_vel_limits=(KINOVA_JOINT_VEL if args.kinova_limits
-                          else HW_JOINT_VEL if args.hw_limits else None),
+        joint_vel_limits=(([args.joint_vel] * 6 if args.joint_vel else KINOVA_JOINT_VEL)
+                          if args.kinova_limits else HW_JOINT_VEL if args.hw_limits else None),
         joint_vel_limit_mode=("scale" if args.kinova_limits else "clip"),
-        eef_twist_limits=(KINOVA_TWIST if args.kinova_limits else None),
+        eef_twist_limits=((tuple(float(x) for x in args.twist_limits.split(","))
+                           if args.twist_limits else KINOVA_TWIST)
+                          if args.kinova_limits else None),
         **({"base_x_offset": args.base_x_offset} if args.base_x_offset is not None else {}),
         init_qpos=args.init_qpos,
         obs_acc_saturation=args.obs_acc_saturation,
@@ -284,6 +310,15 @@ def main():
         spot_front_cam=args.spot_front_cam,
         button_stiffness=args.button_stiffness,
         button_estop_profile=estop_prof,
+        gripper_types=args.gripper,
+        button_xml=args.button_xml,
+        control_freq=args.control_freq,
+        obs_vel_scale=(20.0 / args.control_freq if args.dilate_obs else 1.0),
+        action_ema=args.env_action_ema,
+        lab_cam_box=args.lab_cam_box,
+        base_z_range=args.base_z_range,
+        standoff_keep_reach=args.standoff_keep_reach,
+        obs_base_relative=args.obs_base_relative,
     )
 
     all_rows = {}
@@ -302,7 +337,7 @@ def main():
 
     succ_by_model = {}
     for label, rows in all_rows.items():
-        succ_by_model[label] = summarize(label, rows)
+        succ_by_model[label] = summarize(label, rows, args.control_freq)
 
     # Significance test for exactly two models
     if len(specs) == 2:

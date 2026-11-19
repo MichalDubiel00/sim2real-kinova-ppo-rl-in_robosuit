@@ -1,0 +1,104 @@
+# Arm PH: PS started from the lab's Home pose (docs 6.78). Start: arm_ps 146.12M, +16M.
+# Only change vs arm_ps: init_qpos = Home [0,15,230,0,55,90] deg. Home is the lab's own saved action:
+# no rl_via -> rl_start sweep, which crosses the centre cap with Spot lying (-1.9 cm, docs 6.77).
+# Home clearance: Spot 9.9 cm, board 4.1 cm (lying 0.20) .. 26.3 cm (standing).
+# PS at 0.20 (from rl_start): 92/100, 19.6 board-contact steps/ep (criterion failed there).
+# Criterion (n=100, h=2000 at 8.065 Hz, lab caps, filter on, d=0, start Home; base height 0.20, 0.40,
+# 0.62): success >= 95/100 at each height; board-contact steps/ep <= 2.0 at each height;
+# Spot-contact episodes <= 5/100; time to success <= 800 steps. d=1 and jitter reported, not gating.
+# 4M check: eval success must be rising.
+#   python training/train_board.py --config training/configs/arm_ph.yaml \
+#     --resume logs/board_6dof/arm_ps/checkpoints/ppo_board_146123552_steps.zip --timesteps 16000000
+
+algorithm: PPO
+policy: MlpPolicy
+
+learning_rate: 0.00003
+n_steps: 2048
+n_envs: 8
+batch_size: 64
+n_epochs: 10
+
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+policy_kwargs:
+  net_arch: [256, 256]
+  activation_fn: tanh
+
+robot: Kinova3_6DOF             # Kinova3_6DOF = lab Gen3 6DOF (obs 120); Kinova3 = stock 7DOF (obs 128)
+
+init_qpos: [0.0, 0.2618, -2.2689, 0.0, 0.9599, 1.5708] # Home (lab saved action) [rad] (docs 6.78)
+spot_body: true                 # Spot body as an obstacle (docs 6.42)
+spot_front_cam: true            # front camera bar as an obstacle
+spot_collision_cost: 5.0        # per-step Spot-body contact penalty
+force_gripper_closed: true      # gripper action overridden to closed
+finger_press_gate: true         # a press counts only with a finger on the cap
+finger_misuse_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+contact_speed_cost: 0.0         # v2.5 penalty, rejected (docs 6.6)
+dense_align_coef: 0.05          # axis-alignment dense term
+collision_cost: 5.0             # per-step arm-board/wall contact penalty
+action_rate_cost: 0.3           # penalty on ||a_t - a_{t-1}||^2
+approach_speed_cost: 0.0        # approach-speed penalty, 0 = off (docs 6.45)
+approach_brake_time: 0.30       # allowed approach speed = distance / this [s]
+action_rate_anneal_steps: 2000000 # action-rate curriculum length [steps]
+action_rate_anneal_origin: 50223552 # fixed curriculum origin step, needed for --resume
+depress_shaping_k: 400.0        # potential shaping on cap depression
+depress_clip_buffer: 0.001      # shaping depth capped at activation + buffer [m] (docs 6.19)
+activation_depth: 0.0059        # cap travel counted as a press [m]
+base_x_offset: -0.43            # Spot stand-off: arm base 0.93 m from the wall (docs 6.68)
+base_x_noise: 0.02              # per-episode stand-off noise [m]
+gripper: Robotiq140Gripper      # lab gripper (docs 6.65); arm_d used Robotiq85Gripper
+button_xml: button_lab.xml      # lab E-stop boxes, cap top 80 mm above the face (docs 6.66)
+
+total_timesteps: 16000000       # ignored on --resume (--timesteps = additional steps)
+horizon: 2000                   # episode length [control steps] = 248 s at 8.065 Hz
+control_freq: 8.064516129032258  # 500/62 Hz: integer substeps (docs 6.71)
+obs_vel_scale: 2.48             # 20 / control_freq: velocity obs look like the 20 Hz loop
+action_ema: 0.5                 # in-loop low-pass on arm actions (docs 6.73)
+random_order: true              # random target order per episode
+
+board_pos_noise: 0.06           # per-episode board offset [m]
+percep_pos_bias: 0.015          # per-episode perception bias [m]
+percep_pos_noise: 0.005         # per-step perception noise [m]
+percep_axis_noise: 0.05         # per-episode press-axis noise
+base_z_noise: 0.03              # ignored when base_z_range is set
+base_z_range: [0.20, 0.65]      # arm base height per episode: lying .. standing [m] (docs 6.76)
+standoff_keep_reach: true       # stand-off follows the height, base-board distance kept
+obs_base_relative: true         # EEF position relative to the arm base
+lab_cam_box: [0.060, 0.115, -0.100, 0.100, -0.030, 0.060] # measured lab front camera + 1.5 cm (docs 6.74)
+
+joint_vel_limits: [0.873, 0.873, 0.873, 0.873, 0.873, 0.873] # lab Web App 50 deg/s [rad/s]
+joint_acc_limits: [5.2, 5.2, 5.2, 10.0, 10.0, 10.0] # joint acceleration limits [rad/s^2] (Gen3 R07 table 48)
+joint_acc_limit_mode: scale     # scale = firmware semantics; clip = per joint (docs 6.50)
+action_delay_steps: [0, 1]      # loop dead time [control steps of 124 ms]; drawn per episode
+acc_demand_cost: 0.0            # penalty on demand above the limit (measured substep ripple, docs 6.48)
+acc_margin_bonus: 0.0           # bonus for margin below the limit (same caveat)
+joint_acc_limits_noise: [0.6, 1.4] # per-episode multiplier of the acceleration limits
+
+log_std_max: 0.0                # cap on the policy's log_std (LogStdClamp, docs 6.25)
+target_kl: 0.03                 # early stop of a PPO update
+
+checkpoint_freq: 100000
+eval_freq: 200000
+n_eval_episodes: 20
+log_dir: logs/board_6dof/arm_ph
+tensorboard_log: logs/tensorboard
+
+button_estop_profile:           # latching E-stop force profile (docs 6.34)
+  f_start: 10.0
+  f_peak: 20.0
+  x_peak: 0.004
+  f_after: 5.0
+  snap_width: 0.0003
+  x_stroke: 0.006
+  latch: true
+
+joint_vel_limit_mode: scale     # scale = proportional, direction kept (twist mode); clip = per joint
+eef_twist_limits: [0.2, 0.349]  # lab Web App Cartesian Joystick caps [m/s, rad/s]
+n_eval_envs: 2                  # parallel evaluation envs

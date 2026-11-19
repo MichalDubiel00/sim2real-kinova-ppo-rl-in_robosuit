@@ -54,6 +54,32 @@ class ActionToTwist:
         return v * s, w * s
 
 
+class StaticTwist:
+    """P8F/PS loop (8.065 Hz, docs 6.77): in-loop EMA as in training, then a static per-axis gain
+    (matrix: robosuite OSC couples rotation and translation) and proportional caps. No first-order model: in robosuite the EMA output reaches the grip
+    point with tau 50-170 ms, on the Gen3 the twist reaches it after ~60 ms dead time + tau
+    ~85 ms (step test 18.11), so a bridge filter would count the lag twice."""
+
+    def __init__(self, gain, ema=0.5, v_cap=0.2, w_cap=0.349, speed_scale=1.0):
+        """gain: [6] per axis or [6x6] matrix (rows v,w; cols EMA output)."""
+        g = np.asarray(gain, dtype=np.float64)
+        self.gain = np.diag(g) if g.ndim == 1 else g
+        self.ema = 1.0 if ema is None else float(ema)
+        self.v_cap, self.w_cap = float(v_cap), float(w_cap)
+        self.speed_scale = float(speed_scale)
+        self.reset()
+
+    def reset(self):
+        self.e = np.zeros(6)
+
+    def step(self, action):
+        a = np.clip(np.asarray(action, dtype=np.float64)[:6], -1.0, 1.0)
+        self.e = self.ema * a + (1.0 - self.ema) * self.e
+        u = self.gain @ self.e
+        v, w = cap_twist(u[:3], u[3:], self.v_cap, self.w_cap)
+        return v * self.speed_scale, w * self.speed_scale
+
+
 def base_to_tool(v_base, w_base, R_base_tool):
     """Twist from base frame to tool frame (ros2_kortex uses
     CARTESIAN_REFERENCE_FRAME_TOOL). R_base_tool: columns = tool axes in base."""
@@ -92,7 +118,22 @@ def selftest():
     # 5. point shift: rotation about Z, point 1 m on X -> velocity along +Y
     v2, _ = shift_point([0, 0, 0], [0, 0, 1.0], [1.0, 0, 0])
     assert np.allclose(v2, [0, 1, 0])
-    print("twist_out: 5/5 tests OK")
+    # 6. static map: EMA ramp 0.5, 0.75, ...; gain per axis; caps keep direction
+    st = StaticTwist([0.2, 0.1, 0.15, 1.6, 1.5, 1.3], ema=0.5, v_cap=0.2, w_cap=0.349)
+    v, w = st.step([0.4, 0, 0, 0, 0, 0])
+    assert np.allclose(v, [0.04, 0, 0]) and np.allclose(w, 0)
+    v, w = st.step([0.4, 0, 0, 0, 0, 0])
+    assert np.allclose(v, [0.06, 0, 0])
+    for _ in range(20):
+        v, w = st.step([1, 1, 1, 1, 1, 1])
+    assert np.isclose(np.linalg.norm(v), 0.2) and np.isclose(np.linalg.norm(w), 0.349)
+    assert np.allclose(v / np.linalg.norm(v), np.array([0.2, 0.1, 0.15]) / np.linalg.norm([0.2, 0.1, 0.15]))
+    # 7. matrix gain: a rotation command moves the grip point
+    st = StaticTwist([[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0.3], [0, 0, 1, 0, 0, 0],
+                      [0, 0, 0, 1, 0, 0], [0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1]], ema=1.0, v_cap=9, w_cap=9)
+    v, w = st.step([0, 0, 0, 0, 0, 0.1])
+    assert np.allclose(v, [0, 0.03, 0]) and np.allclose(w, [0, 0, 0.1])
+    print("twist_out: 7/7 tests OK")
 
 
 if __name__ == "__main__":

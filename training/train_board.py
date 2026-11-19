@@ -296,21 +296,8 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
-
-    total_timesteps = args.timesteps or cfg.get("total_timesteps", 3_000_000)
-    n_envs = args.n_envs or cfg.get("n_envs", 4)
-    log_dir = cfg.get("log_dir", "logs/board")
-    tb_log = cfg.get("tensorboard_log", "logs/tensorboard")
-    ckpt_freq = cfg.get("checkpoint_freq", 100_000)
-
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(tb_log, exist_ok=True)
-
+def env_kwargs_from_cfg(cfg):
+    """ButtonBoardEnv kwargs from a training config (also used by the bridge and diagnostics)."""
     # "Kinova3" = stock 7DOF, "Kinova3_6DOF" = lab variant; models are not interchangeable.
     robot = cfg.get("robot", "Kinova3")
     controller_cfg = suite.load_composite_controller_config(controller="BASIC", robot=robot)
@@ -355,6 +342,9 @@ def main():
         eef_twist_limits=cfg.get("eef_twist_limits"),
         # Non-linear E-stop model (docs 6.34): dict like ESTOP_PROFILE_EXAMPLE, missing = 500 N/m spring
         button_estop_profile=cfg.get("button_estop_profile"),
+        # Lab hardware (docs 6.66): Robotiq140Gripper + "button_lab.xml"; missing = arm_d scene.
+        gripper_types=cfg.get("gripper", "Robotiq85Gripper"),
+        button_xml=cfg.get("button_xml", "button.xml"),
         # Spot body obstacle + contact penalty (docs 6.41) - changes the task vs runs 6.1-6.41.
         # Start pose: 6 angles or missing = default (docs 6.42).
         init_qpos=cfg.get("init_qpos"),
@@ -384,7 +374,35 @@ def main():
         activation_depth=cfg.get("activation_depth", None),
         # Spot stand-off; default -0.10 = contact-free start pose
         base_x_offset=cfg.get("base_x_offset", -0.10),
+        base_x_noise=cfg.get("base_x_noise", 0.0),
+        # Control loop rate and velocity-obs dilation (docs 6.71)
+        control_freq=cfg.get("control_freq", 20),
+        obs_vel_scale=cfg.get("obs_vel_scale", 1.0),
+        action_ema=cfg.get("action_ema"),
+        lab_cam_box=cfg.get("lab_cam_box"),
+        base_z_range=cfg.get("base_z_range"),
+        standoff_keep_reach=cfg.get("standoff_keep_reach", False),
+        obs_base_relative=cfg.get("obs_base_relative", False),
     )
+    return env_kwargs
+
+
+def main():
+    args = parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+
+    total_timesteps = args.timesteps or cfg.get("total_timesteps", 3_000_000)
+    n_envs = args.n_envs or cfg.get("n_envs", 4)
+    log_dir = cfg.get("log_dir", "logs/board")
+    tb_log = cfg.get("tensorboard_log", "logs/tensorboard")
+    ckpt_freq = cfg.get("checkpoint_freq", 100_000)
+
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(tb_log, exist_ok=True)
+
+    env_kwargs = env_kwargs_from_cfg(cfg)
 
     # Training starts at joint_vel_limits_start, EVALUATION always uses the target limit,
     # so best_model is best in the hardware envelope (docs 6.32).

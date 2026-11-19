@@ -179,7 +179,7 @@ q = q_prev + v dt), verified on the physical effect, not on the parameter (PL 6.
 | train in `scale`, acc penalties removed | arm_sb 90.12M | E-G, h2000 | **100/100**, 12.8 s, collisions 6.98 (median 4) | 6.51 |
 | + dead-time randomisation [0,2] | **arm_d 98.12M** | E-H, h2000 | 98 / 99 / 98 % at d = 0/1/2 | 6.55 |
 
-**Hardware model: `arm_d`** (`logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip`).
+**Hardware model: `arm_d`** (`models/arm_d_98123552.zip`).
 Compared with `arm_sb` on identical seeds: lower collisions at every delay
 (3.46 vs 6.98 at d=0, p = 0.0002; 5.62 vs 10.15 at d=1, p = 0.041; 18.74 vs 30.68 at d=2,
 p < 0.0001), 98 vs 93/100 at d = 2, at the cost of 2 lost episodes at d = 0 (98 vs 100/100,
@@ -188,7 +188,7 @@ tail. Contract of the scene per checkpoint: `models/README.md`, `training/config
 
 ## 6. Key findings (what the thesis can argue)
 
-### 6.1 Reward cannot fix behaviour; structure can
+### 6.1 Penalties added to a working policy mostly failed; structural changes worked
 Six attempts to fix behaviour through reward failed: v2.2 finger-misuse penalty (0/100, the
 policy learned to avoid buttons), v2.4 contact-quality penalties (85 -> 70 -> 43 %), v2.5
 corrected penalties (83 -> 61 %), s3 reward clipping (no effect, more collisions), approach
@@ -198,6 +198,9 @@ step, so the lingering contact with the just-pressed cap was taxed as "wrong but
 (~93 % of all "wrong contact" steps). The one success was `collision_cost` 0.5 -> 5.0 for
 arm/board contact (collisions 4.7x lower). What did work were structural changes: geometry,
 horizon, a log_std clamp, the right limit semantics, the stand-off.
+This is an empirical observation for penalties added during fine-tuning, not a general rule:
+other reward designs (e.g. an action-rate weight ramped up over training, as in standard Isaac
+Lab tasks) were not tested and remain a legitimate option, e.g. for jitter at 8 Hz.
 
 ### 6.2 The horizon was hiding most of the "plateau"
 `s2` at h = 1000 / 1500 / 2000: 51 / 74 / 85/100, paired 23:0 and 11:0. The max success
@@ -350,8 +353,70 @@ Kortex /joint_states (wrapped to [-pi, pi])
 - **Stand-off tolerance** (robosuite, `arm_d`, n = 40): from 2 cm farther to 4 cm closer than
   trained; farther loses reach, closer raises collisions (34.9 steps/ep at 6 cm). Yaw tolerance
   not measured.
-- **Mock `ros2_kortex`** (`mock_kortex.py`): tests the bridge logic without the robot, not the
-  policy's success.
+- **Mock `ros2_kortex`** (`tools/mock_kortex.py`): tests the bridge logic without the robot, not
+  the policy's success.
+- **Code structure (PL 6.64).** `core/` (no ROS: observation, filter, step-test analysis, wall,
+  operator, ArUco), `robots/` (one backend per file over a shared base: joint states, TF, JTC
+  homing, watchdog; a backend adds only its output and start/stop hooks), `bridge_node.py`
+  (CLI, startup checks, loop), `tools/`. Regression on the mock: step test and a 120-step policy
+  run match the pre-split code (grip-to-target distance within 1.5 mm, timing jitter).
+- **Upstream driver with mock hardware** (`kortex_bringup`, `use_fake_hardware:=true`, PL 6.64):
+  core FK vs the Kortex URDF (6DOF + 2F-85) 0.2 mm / 0.00 deg; switching to `twist_controller`
+  is rejected by mock hardware, as documented upstream.
+
+### 8.0 Arm PS: one policy across Spot postures (PL 6.76)
+
+P8F +16M with the arm base height drawn per episode from [0.20, 0.65] m, stand-off keeping the
+base-to-board distance, EEF observed relative to the base. n = 100, d = 0: base height 0.62 m
+100/100 (26.9 s, 1.0 contact steps/ep), 0.40 m 100/100 (24.2 s, 1.1), 0.20 m (lying) 92/100
+(42.5 s, 19.6 contact steps/ep, Spot contact 4/100); d = 1: 0.62 m 100/100, 0.20 m 99/100
+(13.3). Pre-registered criterion failed in 1 of 12 checks (board contacts at 0.20 m). P8F
+zero-shot at 0.20 m was 2/20 with 213 contact steps/ep.
+
+### 8.1 Lab-driver backend for the 8 Hz policies (PL 6.77)
+
+```
+lab /joint_states (j1/j4/j6 in [0, 2pi), velocities present)
+  -> JointUnwrapper -> ObsCore built from the TRAINING CONFIG (noise off, nominal base;
+     obs_base_relative needs no shift, the board pose in the base frame carries the posture)
+  -> PPO P8F/PS
+  -> RefPlant: training model set to the measured (q, qd), action through the training chain
+     (in-loop EMA 0.5, OSC, twist/joint caps, acceleration limits) for one 124 ms period,
+     contacts off -> mean grip-point twist
+  -> TOOL frame from FK, grip point (0.2075 m) -> Web App TCP (0.20 m), x2 (driver halves)
+  -> /twist_controller/commands (TwistStamped); start pose via saved actions
+     nuc -> Home -> rl_via -> rl_start (/goto_position)
+```
+
+- **Driver choice.** The lab's `kortex_ros2_python` instead of `ros2_kortex`: the latter switches
+  the arm to LOW_LEVEL and cannot run beside the lab stack, needs `ros2_control` from apt on the
+  robot PC, and the lab deploys its own driver. Measured on 18.11: dead time 30-80 ms, tau
+  ~85 ms, smooth at 8 Hz, no stops over Wi-Fi, Cartesian Joystick caps (0.2 m/s) apply to API
+  twists.
+- **Action -> twist is not a per-axis gain.** robosuite's OSC couples rotation and translation:
+  a rotation command moves the grip point (v_y <- e_wz 0.35, v_z <- e_wy -0.21 m/s per unit).
+  Per-axis gains reproduced the simulated linear direction with median cosine 0.68 and failed
+  in closed loop (0/5 targets on a kinematic mock); a 6x6 matrix gave cosine 0.95 but stayed
+  order-sensitive. Using the training plant itself from the measured state (RefPlant) matches
+  simulated free-space velocity with a median error of 3 mm/s at ~30 ms per step. No extra
+  first-order filter: the arm's own lag (60 ms + 85 ms) replaces robosuite's (50-170 ms).
+- **Driver dead band irrelevant.** 0 of 2298 P8F commands fall below it; near-target grip
+  speed median 0.16 m/s.
+- **Verification.** Core observations equal the env's bit for bit across random postures
+  (0.34-0.47 m base height), up to the 6 mm cap depression in `target_rel`.
+- **Physics mock** (`tools/mock_labpy.py`: training scene with board and caps, joint servo
+  following the twist with the measured lag, own /clock): 3/5 targets for P8F and PS vs
+  99-100/100 in simulation. Large tool-to-axis angles also occur in training (median 14-83 deg
+  for btn0-4): the policy presses side caps with the side of the long 2F-140 fingers, presses
+  register with the grip point 2-8 cm from the cap centre, so target switching must come from
+  press detection, not distance. The remaining gap is contact behaviour (stiff servo vs
+  compliant OSC); only hardware can settle it.
+- **Route hazard at the lying posture.** With the board at its current height and the trained
+  stand-off (0.82 m at 0.20 m base height), the rl_via -> rl_start sweep crosses the centre cap
+  (-1.9 cm); rl_start itself is clear. Procedure: go to rl_start while standing at 0.93 m
+  (>= 11 cm from the board), approach to 0.82 m (>= 5.5 cm), lie down (clearance grows to
+  19.5 cm). Lying down in place at 0.93 m puts the board centre 1.03 m from the base, outside
+  PS's training distribution (0.93 m).
 
 ## 9. Negative results worth reporting
 
@@ -400,8 +465,95 @@ Kortex /joint_states (wrapped to [-pi, pi])
 - No hardware result yet. Unmeasured on hardware: wall-clock loop dead time and its tail,
   perception delay, arm step response (filter retuning), TCP offset in the Kinova Web App,
   camera extrinsic (Kinova Vision calibration), camera topics, marker placement on the board.
-- Gripper observation is a constant (training medians); the real 2F-85 is stiffer than the
-  simulated Robotiq 85, whose finger joints are loose.
+- **Gripper mismatch (found 2026-10-29):** the lab arm carries a Robotiq 2F-140 (Web App;
+  TCP Z 0.2 m, 1.025 kg), while `arm_d` was trained with robosuite's `Robotiq85Gripper`.
+  The 2F-140 grip site lies 62 mm farther from the flange (0.2075 vs 0.145 m); unadapted, the
+  policy would drive the real fingers about 6 cm into the board. The observation size is
+  unchanged (6 gripper joints), so `arm_d` can be fine-tuned in a 2F-140 scene. The MASKOR
+  Webots model already uses the 2F-140.
+- Hardware scene (docs 6.66): 2F-140 plus the lab E-stop boxes (cap top 80 mm above the face
+  vs 53 mm). `arm_d` there, n=20, h=2000: still 20/20, but board-contact steps per episode
+  2.0 -> 35.3 and Spot contact 0/20 -> 8/20. The boxes alone change nothing (1.4); the gripper
+  alone gives 103.8. Fine-tuning in the hardware scene is required, with collisions as the
+  criterion.
+- Arm G (docs 6.68): `arm_d` +8M in the hardware scene with training speed caps. n=100, h=2000:
+  100/100 at d=0 and d=2, board-contact steps 2.6 / 8.9 per episode (vs `arm_d` in its own
+  scene 3.5 / 18.7), but Spot contact in 27 / 52 episodes (vs 2 / 11), so it fails the
+  pre-registered criterion on Spot contact. Arm L (lab caps) was preempted at 99.7M and resumed.
+  Diagnosis (n=30): the wrist links touch the front camera bar / front edge of Spot, mostly at
+  the centre and lower-bevel buttons; the 2F-140 (+62 mm) and the taller caps (+27 mm) pull the
+  wrist ~9 cm back over Spot at the 2F-85 stand-off (-0.34 m). Parking Spot 6-9 cm farther
+  (-0.40 / -0.43) gives 0/30 Spot contact at d=0 and 3-4/30 at d=2 without retraining, at the
+  cost of longer episodes (n=100 confirmation pending).
+  Stand-off sweep with clearance (n=30, -0.34...-0.52): the usable window is -0.40...-0.43;
+  beyond -0.46 reach fails (24/30 -> 1/30). At -0.43, d=0: 30/30, no Spot contact, minimum
+  clearance 3.5 cm; d=2: 30/30 but 3/30 contact (min -1.6 cm), so no stand-off removes contact
+  under dead time. The start pose itself clears the camera bar by only 0.7-0.9 cm.
+- Arm L (docs 6.68, lab Web App caps 0.2 m/s, 20 deg/s, joints 50 deg/s): 0/17 at d=0 and d=2
+  (h=2000, evaluation stopped once the >= 90/100 criterion was unreachable); every episode hits
+  the horizon with 1.6-1.9 of 5 buttons pressed. 8M steps of fine-tuning from `arm_d` do not
+  adapt the policy to the lab speed limit.
+- Arm L2 (docs 6.70): arm L continued for +16M with horizon 4000 (lab caps). A longer horizon
+  should not by itself teach slowness: time pressure comes from discounting (gamma 0.99, ~100-step
+  effective horizon), and the only per-step presence term (<= 0.05/step) sums to <= 5 points,
+  below one press (25). Criterion: >= 90/100 at h=4000 (n=100, d=0 and d=2).
+- Slower control loop under the lab limits (docs 6.71): the lab caps are exactly 0.4 x the
+  training caps (linear and angular), so at ~8 Hz the cap per control step matches the 20 Hz
+  training loop; velocity observations are scaled by 20/f. A robosuite pitfall: with a
+  non-integer number of physics substeps per control step (8 Hz = 62.5 x 2 ms) observations are
+  sampled one control step late; 500/62 = 8.065 Hz is used and the env now rejects such rates.
+  Arm P8 fine-tunes P for +8M at 8.065 Hz with the lab caps and delay [0, 1] step. Criterion:
+  >= 90/100, Spot contact <= 5/100, board contact <= 2.0 steps/ep, time to success <= 800 steps.
+- Arm P8 (n=100, lab caps, 8.065 Hz, -0.43): 99/100 (d=0) and 100/100 (d=1) in 36-43 s, Spot
+  contact 3-4, board contact 1.2 / 3.7 steps/ep (fails <= 2.0 at d=1). Jitter (docs 6.72, 500 Hz):
+  bang-bang actions, TCP direction reversals 1.10/s vs 0.16/s for P at 20 Hz; a deployment-only
+  action EMA trades jitter for collisions. Arm P8F (docs 6.73) trains with the EMA (alpha 0.5)
+  inside the loop; criterion adds median reversals <= 0.3/s and tremor <= 1.0 mm.
+- Arm P8F result (docs 6.73, n=100, h=2000 at 8.065 Hz, lab caps, -0.43, in-loop EMA 0.5, lab camera
+  box): 99/100 (d=0) and 100/100 (d=1) in 26-29 s, Spot contact 0/100 at both, board contact 1.0 / 3.0
+  steps/ep (fails <= 2.0 at d=1); jitter n=20: median TCP reversals 0.41/s (d=0, fails <= 0.3) and
+  0.25/s (d=1), tremor 0.94 / 0.83 mm. Criterion missed in 2 of 12 checks, but better than P8 on every
+  metric (reversals 1.10 -> 0.41/s, tremor 1.44 -> 0.94 mm, time 36 -> 26 s, Spot contact 3-4 -> 0):
+  an action filter inside the training loop reduces jitter without the collision cost of a
+  deployment-only filter. P8F becomes the hardware model.
+- Arm PS (docs 6.76): one policy for lying / crouched / standing Spot. Arm base height drawn per
+  episode from [0.20, 0.65] m (lying measured 0.20 m), stand-off keeps the base-board distance,
+  EEF position observed in the arm base frame. P8F zero-shot (n=20): 20/20 at 0.62 and 0.50 m,
+  15/20 at 0.40, 7/20 at 0.30, 2/20 at 0.20 (212 board-contact steps/ep). +16M from P8F 130.12M;
+  criterion: >= 90/100 at 0.20/0.40/0.62 m and >= 95/100 at 0.62, Spot contact <= 5/100,
+  board contact <= 2.0 steps/ep.
+- Measured lab front camera (docs 6.74): ifm O3R ToF head, 7.5-10 cm in front of the arm base
+  axis, top 4.5 cm above Spot - closer and higher than the 28 cm Kinect bar used in training.
+  Added as an extra collision box with a 1.5 cm margin (`lab_cam_box`). n=50, lab caps, -0.43:
+  P8F at 128.42M has 0/50 Spot contact at d=0 and d=1 and never comes closer to the camera box
+  than in the start pose (9.7 cm); the Kinect bar stays the binding buffer (min 2.5 cm).
+  P8 entered the margin box once (-1.8 cm). No scene change needed for training.
+- Lab session 2026-11-12 (docs 6.75, read-only): `/joint_states` at ~1 kHz with gaps up to 0.56 s
+  (bridge needs an observation-age guard); the lab driver sends each twist twice, stops after
+  0.20-0.25 s without a message, and also offers a 1 kHz low-level `FollowJointTrajectory` path
+  (hardware route for a position-action policy, future work). Saved robot poses were checked in
+  simulation: the Web App angle convention matches the sim; rest/nuc -> RL start is clear, but a
+  straight joint move Home -> RL start dips the gripper 0.5-2.6 cm into Spot's front, so a via
+  point is used. Home as the training start pose was considered and deferred (needs fine-tuning,
+  off-distribution wrist branch); it returns if the measured start clearance is < 2 cm.
+  The lab already runs a classical visual-servoing E-stop pipeline - a baseline for comparison.
+- Arm L2 was stopped at 118.02M: the 4M checkpoint rule failed (eval episode length 4000).
+- Arm P (docs 6.69): `arm_g` +8M at the chosen stand-off (-0.43, i.e. arm base 0.93 m from the
+  wall) with a new per-episode stand-off randomisation of +/-2 cm (arm and Spot move together).
+  Pre-registered criterion (n=100, h=2000): success >= 95/100, Spot contact <= 2/100 at d=0 and
+  <= 5/100 at d=2; at -0.41 and -0.45 (d=0) success >= 95/100 and Spot contact <= 2/100.
+  Result (n=100, h=2000): 100/100 at -0.41, -0.43 (d=0 and d=2), 99/100 at -0.45; Spot contact
+  2 / 0 / 7 / 0 episodes; board-contact steps 0.4-1.5 per episode; time to success 192-258 steps.
+  Fails the criterion only on Spot contact at d=2 (7 > 5; arm_g: 10).
+- Lab Web App speed limits (Cartesian Joystick 0.2 m/s, 20 deg/s; docs 6.67), hardware scene,
+  n=20, h=2000: `arm_d` 20/20 with training caps -> 2/20 with the lab twist caps, 1/20 adding the
+  50 deg/s joint limit. The linear cap alone gives 0/20; the angular cap alone 16/20. The policy
+  gets lost rather than slowing down. Either the lab raises the limit or training uses it.
+- One controller snapshot disagrees with the core's nominal FK by about 8 mm / 0.6 deg
+  (vs 0.2 mm against the Kortex URDF); more poses are needed.
+- Web App joint limits in Angular Joystick mode: 50 deg/s, 1 rad/s^2 (joints 1-3) and
+  10 rad/s^2 (4-6), vs 1.39/1.22 rad/s and 5.2/10 rad/s^2 in training; twist-mode limits unread.
+- Gripper observation is a constant (training medians).
 - Button model from a datasheet, not from the lab's board; force profile and stroke unmeasured.
 - Board dimensions taken from the MASKOR Webots model (one socket inconsistent), not measured
   with a tape on the real board.

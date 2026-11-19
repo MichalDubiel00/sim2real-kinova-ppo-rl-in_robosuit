@@ -5,7 +5,7 @@ robosuite reference values for the hardware bridge (arm_d scene).
   2. action -> TCP VELOCITY gain under the training limits
   3. gripper medians (closed) from policy episodes
 
-  python training/diag_hw_reference.py --model logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip
+  python training/diag_hw_reference.py --model models/arm_d_98123552.zip
 """
 
 import sys

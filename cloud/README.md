@@ -124,3 +124,120 @@ parallel). The laptop does ~250 steps/s, so the first estimate (18 h) was 45 % t
 cloud vCPUs are slower than the laptop's cores. Check current spot prices in the console for
 the chosen region. No GPUs on purpose: with a 256x256 MLP an accelerator adds nothing, and
 MuJoCo stepping is the bottleneck.
+
+## Arms G and L (2026-11-03, docs 6.68)
+
++8M from `arm_d` (98 123 552), target 106 123 552, hardware scene (2F-140, lab E-stop boxes).
+G keeps the training speed caps; L uses the lab Web App caps (0.2 m/s, 0.349 rad/s, joints
+0.873 rad/s).
+
+```bash
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip
+for ARM in g l; do
+  gcloud compute instances create kinova-arm-$ARM ... \
+    --metadata=arm=$ARM,bucket=BUCKET-NAME,target-steps=106123552,start-ckpt=ppo_board_98123552_steps.zip,start-step=98123552 \
+    --metadata-from-file=startup-script=cloud/startup.sh
+done
+```
+
+Evaluate in the arm's own scene: add `--gripper Robotiq140Gripper --button-xml button_lab.xml`,
+and for L also `--twist-limits 0.2,0.349 --joint-vel 0.873`.
+
+## Arm P (2026-11-05, docs 6.69)
+
++8M from `arm_g` (106 123 552), target 114 123 552, hardware scene at the Spot stand-off found
+by the sweep in docs 6.68: `base_x_offset -0.43`, `base_x_noise 0.02` (per-episode stand-off,
+arm and Spot move together).
+
+```bash
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_g/checkpoints/ppo_board_106123552_steps.zip
+gcloud compute instances create kinova-arm-p ... \
+  --metadata=arm=p,bucket=BUCKET-NAME,target-steps=114123552,start-ckpt=ppo_board_106123552_steps.zip,start-step=106123552 \
+  --metadata-from-file=startup-script=cloud/startup.sh
+```
+
+Spot VMs with `--instance-termination-action=STOP` do **not** restart after preemption: check
+`gcloud compute operations list --filter="targetLink~kinova-arm-"` and restart with
+`gcloud compute instances start`; `run_arm.sh` resumes from the highest checkpoint.
+Evaluate with `--gripper Robotiq140Gripper --button-xml button_lab.xml --base-x-offset=-0.43`.
+
+## Arm L2 (2026-11-05, docs 6.70)
+
+`arm_l` continued with `horizon: 4000`, +16M from 106 123 552 to 122 123 552. The start
+checkpoint is uploaded under its own name, because `start/ppo_board_106123552_steps.zip` is
+already arm P's start (`arm_g`):
+
+```bash
+cp logs/board_6dof/arm_l/checkpoints/ppo_board_106123552_steps.zip logs/board_6dof/arm_l/arm_l_106123552.zip
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_l/arm_l_106123552.zip
+gcloud compute instances create kinova-arm-l2 ... \
+  --metadata=arm=l2,bucket=BUCKET-NAME,target-steps=122123552,start-ckpt=arm_l_106123552.zip,start-step=106123552 \
+  --metadata-from-file=startup-script=cloud/startup.sh
+```
+
+Preemption watchdog (local, stops by itself once every listed arm has `KONIEC`):
+`setsid nohup ~/.kinova_watch/watch.sh p l2 &`, log in `~/.kinova_watch/watch.log`.
+
+### Switching a running arm from spot to standard (2026-11-05)
+
+P and L2 were preempted three times in two days. Both were switched to standard provisioning
+(no preemption; run_arm.sh resumes from the last checkpoint):
+
+```bash
+gcloud compute instances stop kinova-arm-$ARM --zone europe-west3-a
+gcloud compute instances set-scheduling kinova-arm-$ARM --zone europe-west3-a \
+  --provisioning-model=STANDARD --no-preemptible --clear-instance-termination-action \
+  --maintenance-policy=MIGRATE --restart-on-failure
+gcloud compute instances start kinova-arm-$ARM --zone europe-west3-a
+```
+
+`--no-preemptible` is required, otherwise the API rejects STANDARD. The auto shutdown at the
+target still stops the VM, so billing ends with the run.
+
+## Arm P8 (2026-11-06, docs 6.71)
+
+`arm_p` +8M (114 123 552 -> 122 123 552) at `control_freq` 500/62 Hz with the lab Web App caps,
+standard VM from the start. Each control step is 62 physics substeps instead of 25, so expect
+~2.5x fewer steps/s (~30 h).
+
+```bash
+cp logs/board_6dof/arm_p/checkpoints/ppo_board_114123552_steps.zip logs/board_6dof/arm_p/arm_p_114123552.zip
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_p/arm_p_114123552.zip
+gcloud compute instances create kinova-arm-p8 --provisioning-model=STANDARD --maintenance-policy=MIGRATE ... \
+  --metadata=arm=p8,bucket=BUCKET-NAME,target-steps=122123552,start-ckpt=arm_p_114123552.zip,start-step=114123552 \
+  --metadata-from-file=startup-script=cloud/startup.sh
+```
+
+Evaluate with `--control-freq 8.064516129 --dilate-obs --twist-limits 0.2,0.349 --joint-vel 0.873`.
+
+## Arm PS (2026-11-16, docs 6.76)
+
+`arm_p8f` +16M (130 123 552 -> 146 123 552) with the arm base height drawn from [0.20, 0.65] m
+(Spot lying .. standing), standard VM.
+
+```bash
+cp logs/board_6dof/arm_p8f/checkpoints/ppo_board_130123552_steps.zip logs/board_6dof/arm_p8f/arm_p8f_130123552.zip
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_p8f/arm_p8f_130123552.zip
+gcloud compute instances create kinova-arm-ps --provisioning-model=STANDARD --maintenance-policy=MIGRATE ... \
+  --metadata=arm=ps,bucket=BUCKET-NAME,target-steps=146123552,start-ckpt=arm_p8f_130123552.zip,start-step=130123552 \
+  --metadata-from-file=startup-script=cloud/startup.sh
+```
+
+Evaluate with the P8F flags plus `--env-action-ema 0.5 --obs-base-relative --standoff-keep-reach
+--base-z-range H,H` for each height H.
+
+## Arm PH (2026-11-19, docs 6.78)
+
+`arm_ps` +16M (146 123 552 -> 162 123 552) started from the lab's Home pose, standard VM.
+
+```bash
+cp logs/board_6dof/arm_ps/checkpoints/ppo_board_146123552_steps.zip logs/board_6dof/arm_ps/arm_ps_146123552.zip
+cloud/bundle.sh BUCKET-NAME logs/board_6dof/arm_ps/arm_ps_146123552.zip
+gcloud compute instances create kinova-arm-ph --zone=europe-west3-a --machine-type=e2-standard-8 \
+  --provisioning-model=STANDARD --maintenance-policy=MIGRATE --image-family=debian-12 \
+  --image-project=debian-cloud --boot-disk-size=40GB --scopes=storage-rw \
+  --metadata=arm=ph,bucket=BUCKET-NAME,target-steps=162123552,start-ckpt=arm_ps_146123552.zip,start-step=146123552 \
+  --metadata-from-file=startup-script=cloud/startup.sh
+```
+
+Evaluate with the PS flags and `--init-qpos=0.0,0.2618,-2.2689,0.0,0.9599,1.5708`.

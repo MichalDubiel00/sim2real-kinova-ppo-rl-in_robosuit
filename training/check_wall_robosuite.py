@@ -20,7 +20,7 @@ import os
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ros2_bridge"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ros2_bridge", "core"))
 
 from diag_hw_reference import make_env, flatten_obs
 from obs_core import ObsCore, SCENE_ARM_D

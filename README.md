@@ -80,16 +80,25 @@ training/
   check_wall_robosuite.py, eval_press_detector.py, diag_*.py   diagnostics
   plots/plot_lineage.py  learning curve of the hardware-model lineage (README figure)
 ros2_bridge/
-  bridge_node.py         the bridge (backends: dry, servo/ik = Webots, kortex = robot)
-  obs_core.py            observation core (training MuJoCo model, angle unwrapping)
-  twist_out.py           action -> twist filter, caps, frame transforms
-  step_test.py           step-response identification and filter retuning
-  safety.py              virtual wall for the in-air test
-  deadman.py             independent heartbeat watchdog (zero twist + JTC on silence)
-  operator_input.py      operator as press detector (Enter / n / q)
-  aruco_board.py, aruco_probe.py   board pose from an ArUco marker
-  mock_kortex.py         mock of ros2_kortex for rehearsing sessions without the robot
-  webots_truth.py, record_demo.py, diag_latency.py   Webots tools
+  bridge_node.py         the bridge: CLI, startup checks, 20 Hz loop, step test
+  board.py               board pose sources (nominal, x,y,z, ArUco)
+  core/                  no ROS, testable offline
+    obs_core.py          observation core (training MuJoCo model, angle unwrapping)
+    twist_out.py         action -> twist filter, caps, frame transforms
+    step_test.py         step-response identification and filter retuning
+    safety.py            virtual wall for the in-air test
+    operator_input.py    operator as press detector (Enter / n / q)
+    aruco_board.py       board pose from an ArUco marker
+    webots_truth.py      ground-truth board pose in Webots
+  robots/                one file per backend, shared base (joint states, TF, homing, watchdog)
+    base.py              common ROS side; also the dry backend
+    kortex.py            hardware: ros2_kortex twist_controller, controller switching
+    servo.py, ik.py      Webots: MoveIt Servo / Jacobian steps to the JTC
+  tools/
+    deadman.py           independent heartbeat watchdog (zero twist + JTC on silence)
+    mock_kortex.py       mock of ros2_kortex for rehearsing sessions without the robot
+    kortex_limits.py     read-only Kortex API check: speed limits per control mode, active mode
+    aruco_probe.py, record_demo.py, diag_latency.py   Webots tools
 cloud/                   preemption-tolerant GCP training (spot VMs)
 models/README.md         model manifest: scene contract and evaluation command per checkpoint
 docs/                    documentation, figures, recording scripts (docs/video/*.sh)
@@ -124,7 +133,7 @@ auto_activate_base false`), and every script that loads a PPO model blocks Tenso
 
 ```bash
 # evaluate the hardware model in its scene (command and flags: models/README.md)
-python training/compare_models.py "arm_d=logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip" \
+python training/compare_models.py "arm_d=models/arm_d_98123552.zip" \
   --robot Kinova3_6DOF --episodes 100 --seed 1234 --horizon 2000 \
   --kinova-limits --acc-limits --acc-mode scale --action-delay 0 \
   --estop-config training/configs/ppo_board_6dof_estop_hw.yaml \
@@ -136,7 +145,7 @@ bash docs/video/record_arm_d.sh
 
 # train / resume (every config header has its launch command)
 python training/train_board.py --config training/configs/arm_d.yaml \
-  --resume logs/board_6dof/arm_sb/checkpoints/ppo_board_90123552_steps.zip --timesteps 8000000
+  --resume models/arm_sb_90123552.zip --timesteps 8000000
 
 # offline check of the bridge core (observation bit-exact, closed loop through the core)
 python training/verify_obs_core.py --episodes 3
@@ -160,11 +169,17 @@ ros2 control list_controllers        # joint_trajectory_controller active, twist
 ros2 run controller_manager spawner twist_controller --inactive   # only if it is missing
 ```
 
+With the apt packages `kortex_description` 0.2.3 and `robotiq_description` 0.0.1, xacro fails
+with `Invalid parameter "isaac_joint_commands"` (the 2F-85 macro does not declare it). Fix: an
+overlay copy of `robotiq_description` whose `robotiq_2f_85_macro.urdf.xacro` declares
+`isaac_joint_commands` and `isaac_joint_states`, placed first on the path before the launch:
+`export AMENT_PREFIX_PATH=~/ros2_overlays/robotiq_fix:$AMENT_PREFIX_PATH`.
+
 **2. Deadman** (before the bridge, for the whole session). `twist_controller` keeps executing
 its last command; if the bridge dies, the deadman sends zeros and switches back to the JTC.
 
 ```bash
-$PY ros2_bridge/deadman.py
+$PY ros2_bridge/tools/deadman.py
 ```
 
 **3. Bridge.** At start it homes along a collision-checked path, compares its FK with the
@@ -207,7 +222,7 @@ TF, TOOL-frame twist that holds its last command, JTC, controller manager). Run 
 step 1 and use the same commands. It checks the bridge logic, not the policy's success.
 
 ```bash
-$PY ros2_bridge/mock_kortex.py --dead 0.04 --tau 0.06 --gain 0.95
+$PY ros2_bridge/tools/mock_kortex.py --dead 0.04 --tau 0.06 --gain 0.95
 ```
 
 ## Webots (sim2sim)

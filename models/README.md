@@ -6,12 +6,14 @@ scene and the only symptom is a low score; measurements were lost this way befor
 flags its number was measured with, **n** and the **horizon**. A number without these three
 means nothing.
 
-Files are in `logs/` (outside git) and backed up in `gs://sim2real_robosuite/backup/`.
+The hardware model and its fallback are in this directory (`arm_d_98123552.zip`,
+`arm_sb_90123552.zip`, copies of the checkpoints of the same names in `logs/board_6dof/`).
+All other checkpoints are in `logs/` (outside git) and backed up in `gs://sim2real_robosuite/backup/`.
 Scene values are taken from the configs, not from memory.
 
 ## HARDWARE MODEL
 
-### `arm_d/checkpoints/ppo_board_98123552_steps.zip`
+### `models/arm_d_98123552.zip`
 - config `training/configs/arm_d.yaml` = `arm_sb` + 8M with loop dead time
   `action_delay_steps: [0, 2]` drawn per episode; h=2000, n=100, seed 1234, `scale` mode (docs 6.55)
 - **d=0: 98/100, collisions 3.46 (median 0.0) | d=1: 99/100, collisions 4.90 |
@@ -22,14 +24,14 @@ Scene values are taken from the configs, not from memory.
 
 ```bash
 START_POSE="0.0,1.4692,-2.2410,3.1403,-2.0200,3.1416"
-python training/compare_models.py "arm_d=logs/board_6dof/arm_d/checkpoints/ppo_board_98123552_steps.zip" \
+python training/compare_models.py "arm_d=models/arm_d_98123552.zip" \
   --robot Kinova3_6DOF --episodes 100 --seed 1234 --horizon 2000 \
   --kinova-limits --acc-limits --acc-mode scale --action-delay 0 \
   --estop-config training/configs/ppo_board_6dof_estop_hw.yaml \
   --spot-body --spot-front-cam --base-x-offset=-0.34 --init-qpos="$START_POSE"
 ```
 
-**Fallback: `arm_sb/checkpoints/ppo_board_90123552_steps.zip`**: d=0 100/100, collisions
+**Fallback: `models/arm_sb_90123552.zip`**: d=0 100/100, collisions
 6.98; d=2 93/100, collisions 30.68 (n=100, h=2000, scale). Use it only if the dead time
 measured on hardware in wall-clock time is persistently < 50 ms without a tail (docs 6.55).
 

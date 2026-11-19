@@ -5,7 +5,7 @@ Live ArUco board-pose measurement, optionally compared with Webots ground truth.
 Arm must be still (ideally at init_qpos). Prints the mean, frame-to-frame spread and,
 with --truth webots, the error of the cross centre, normal and each button.
 
-  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/aruco_probe.py --frames 30 --truth webots --save /tmp/aruco.png
+  ~/miniconda3/envs/robosuite/bin/python ros2_bridge/tools/aruco_probe.py --frames 30 --truth webots --save /tmp/aruco.png
 """
 
 import sys
@@ -22,7 +22,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from tf2_ros import Buffer, TransformListener
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core"))
 import aruco_board as AB
 
 PROFILES = {"webots": dict(base="gen3_base_link", flange="end_effector_link",

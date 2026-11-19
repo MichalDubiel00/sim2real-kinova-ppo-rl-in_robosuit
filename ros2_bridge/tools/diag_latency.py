@@ -11,7 +11,7 @@ Measures three things, keep them apart:
 
 Run in a ROS terminal (not conda):
     source /opt/ros/humble/setup.bash        # not under `set -u`
-    python3 ros2_bridge/diag_latency.py --tor twist --prob 20
+    python3 ros2_bridge/tools/diag_latency.py --tor twist --prob 20
 Commands are tiny: the arm should twitch, not travel.
 """
 import argparse

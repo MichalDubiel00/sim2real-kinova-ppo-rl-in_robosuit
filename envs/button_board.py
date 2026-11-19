@@ -84,6 +84,11 @@ class ButtonBoardEnv(ManipulationEnv):
         activation_depth:    cap travel counting as a press (6DOF uses 0.010; 12 mm is
                              at the physical limit of the Robotiq85 + cap geometry)
         base_x_offset:       arm base shift toward the wall [m] (where Spot parks)
+        base_x_noise:        +/- per-episode stand-off noise [m]; moves arm and Spot together
+        action_ema:          alpha of a low-pass on arm actions inside the loop (None = off);
+                             the bridge applies the same filter (docs 6.73)
+        obs_vel_scale:       factor on joint/gripper velocity observations; 20/control_freq
+                             makes a slower loop look like the 20 Hz training loop (docs 6.71)
         depress_shaping_k:   potential shaping on the target's depression (discovery aid)
         depress_clip_buffer: cap on the depth fed to that shaping (docs 6.18)
     """
@@ -141,6 +146,11 @@ class ButtonBoardEnv(ManipulationEnv):
         spot_front_cam=False,
         obs_acc_saturation=False,
         action_rate_limit=None,
+        action_ema=None,
+        lab_cam_box=None,
+        base_z_range=None,
+        standoff_keep_reach=False,
+        obs_base_relative=False,
         action_delay_steps=None,
         acc_demand_cost=0.0,
         acc_margin_bonus=0.0,
@@ -150,6 +160,7 @@ class ButtonBoardEnv(ManipulationEnv):
         spot_collision_cost=0.0,
         button_stiffness=None,
         button_estop_profile=None,
+        button_xml="button.xml",
         force_gripper_closed=True,
         finger_press_gate=True,
         finger_misuse_cost=0.0,
@@ -161,6 +172,8 @@ class ButtonBoardEnv(ManipulationEnv):
         depress_clip_buffer=0.001,
         # Spot stand-off: -0.10 gives zero start contacts for 6DOF and 7DOF (docs 6.15).
         base_x_offset=-0.10,
+        base_x_noise=0.0,
+        obs_vel_scale=1.0,
         activation_depth=None,
         **kwargs,
     ):
@@ -173,6 +186,9 @@ class ButtonBoardEnv(ManipulationEnv):
         self.percep_axis_noise = percep_axis_noise
         self.base_z_noise = base_z_noise
         self.force_gripper_closed = force_gripper_closed
+        # Button model: "button.xml" (cap top 53 mm above the face) or "button_lab.xml"
+        # (lab boxes, 80 mm; docs 6.66)
+        self.button_xml = button_xml
         self.finger_press_gate = finger_press_gate
         self.finger_misuse_cost = finger_misuse_cost
         self.contact_speed_cost = contact_speed_cost
@@ -182,6 +198,9 @@ class ButtonBoardEnv(ManipulationEnv):
         self.depress_shaping_k = depress_shaping_k
         self.depress_clip_buffer = depress_clip_buffer
         self.base_x_offset = base_x_offset
+        self.base_x_noise = base_x_noise
+        self.obs_vel_scale = float(obs_vel_scale)
+        self._base_x = base_x_offset
         self.activation_depth = (activation_depth if activation_depth is not None
                                  else self.ACTIVATION_DEPTH)
 
@@ -227,11 +246,27 @@ class ButtonBoardEnv(ManipulationEnv):
         # The bridge can apply the same limit.
         self.action_rate_limit = (None if action_rate_limit is None
                                   else float(action_rate_limit))
+        # Low-pass a = alpha*a + (1-alpha)*a_prev on arm actions, part of the dynamics so the
+        # policy learns through it (a deployment-only filter raised collisions, docs 6.72).
+        self.action_ema = None if action_ema is None else float(action_ema)
+        # Measured lab front camera incl. margin, added on top of the Kinect bar:
+        # [x0, x1, y0, y1, z0, z1] in the arm base frame [m] (docs 6.74).
+        # Spot posture (docs 6.76): absolute arm base height [lo, hi] per episode (lying ~0.20,
+        # standing ~0.62) replaces KINOVA_BASE_Z +/- base_z_noise. standoff_keep_reach moves Spot so
+        # the base keeps the nominal distance to the board centre (closer when lying).
+        self.base_z_range = None if base_z_range is None else tuple(float(v) for v in base_z_range)
+        self.standoff_keep_reach = bool(standoff_keep_reach)
+        # EEF position observed relative to the arm base, re-anchored at the nominal base, so
+        # the observation does not depend on where Spot stands (the bridge works in the base frame).
+        self.obs_base_relative = bool(obs_base_relative)
+        self.lab_cam_box = (None if lab_cam_box is None
+                            else np.asarray(lab_cam_box, dtype=np.float64))
+        self._ema_state = None
         # Loop dead time (docs 6.52): robosuite has none. Modelled as ACTION delay (same
         # loop effect as observation delay, obs size unchanged).
         #   int       fixed delay
         #   [lo, hi]  per-episode random delay
-        # Take the range from MEASUREMENT (ros2_bridge/diag_latency.py), not a guess.
+        # Take the range from MEASUREMENT (ros2_bridge/tools/diag_latency.py), not a guess.
         if action_delay_steps is None:
             self.action_delay_steps = None
         elif isinstance(action_delay_steps, (list, tuple)):
@@ -315,6 +350,12 @@ class ButtonBoardEnv(ManipulationEnv):
             horizon=horizon,
             **kwargs,
         )
+        # Non-integer substeps per control step make robosuite sample observations one
+        # control step late (8 Hz: 62.5 substeps; docs 6.71). Use e.g. 500/62 Hz instead.
+        n_sub = self.control_timestep / self.model_timestep
+        if abs(n_sub - round(n_sub)) > 1e-6:
+            raise ValueError(f"control_freq {self.control_freq} gives {n_sub:.3f} substeps per "
+                             f"step; pick one with an integer count (e.g. {1 / (round(n_sub) * self.model_timestep):.6g} Hz)")
 
     # ------------------------------------------------------------------
     # XML path fix (same workaround as other envs in this project)
@@ -387,11 +428,21 @@ class ButtonBoardEnv(ManipulationEnv):
             lo, hi = self.joint_acc_limits_noise
             self.joint_acc_limits = self._acc_limits_base * float(np.random.uniform(lo, hi))
 
-        self._base_z = self.KINOVA_BASE_Z + np.random.uniform(
-            -self.base_z_noise, self.base_z_noise)
+        if self.base_z_range is not None:
+            self._base_z = float(np.random.uniform(*self.base_z_range))
+        else:
+            self._base_z = self.KINOVA_BASE_Z + np.random.uniform(
+                -self.base_z_noise, self.base_z_noise)
+        x_nom = self.base_x_offset
+        if self.standoff_keep_reach:
+            reach = np.hypot(self.WALL_X - self.base_x_offset, self.BOARD_Z - self.KINOVA_BASE_Z)
+            dz = self.BOARD_Z - self._base_z
+            x_nom = self.WALL_X - np.sqrt(max(reach ** 2 - dz ** 2, 0.0))
+        self._base_x = x_nom + (np.random.uniform(-self.base_x_noise, self.base_x_noise)
+                                if self.base_x_noise else 0.0)
         mount_z = float(self.robots[0].robot_model.bottom_offset[2])
         self.robots[0].robot_model.set_base_xpos(
-            [self.base_x_offset, 0, self._base_z + mount_z])
+            [self._base_x, 0, self._base_z + mount_z])
         if self.init_qpos is not None:
             # init_qpos is a property without a setter: set the instance attribute,
             # which robosuite applies in _reset_internal (survives hard_reset).
@@ -407,6 +458,16 @@ class ButtonBoardEnv(ManipulationEnv):
         # Framed for the docs 6.15 geometry (~4 cm low since 2026-09-01); recordings only.
         cam.set("pos", "-0.25 -0.75 0.95")
         cam.set("xyaxes", "0.7458 -0.6662 0 0.2190 0.2452 0.9445")
+        # Wide side view framing Spot, arm and board (recordings only).
+        eye = np.array([self._base_x - 0.6, -2.1, 1.55])
+        fwd = np.array([self._base_x + 0.45, 0.0, 0.55]) - eye
+        fwd /= np.linalg.norm(fwd)
+        right = np.cross(fwd, [0.0, 0.0, 1.0]); right /= np.linalg.norm(right)
+        up = np.cross(right, fwd)
+        wide = ET.SubElement(mujoco_arena.worldbody, "camera")
+        wide.set("name", "wide_view")
+        wide.set("pos", " ".join(f"{v:.4f}" for v in eye))
+        wide.set("xyaxes", " ".join(f"{v:.4f}" for v in (*right, *up)))
 
         # PHYSICAL wall behind the board (visual-only before 2026-08-05, letting the arm
         # reach through the board; docs 6.19). The flush board/wall pair is static, so
@@ -431,7 +492,7 @@ class ButtonBoardEnv(ManipulationEnv):
             spot.set("type", "box")
             # half-sizes: (0.266+0.729)/2, 0.139, (0.002+0.202)/2
             spot.set("size", "0.4975 0.1390 0.1020")
-            spot.set("pos", f"{self.base_x_offset - 0.2315:.4f} 0 "
+            spot.set("pos", f"{self._base_x - 0.2315:.4f} 0 "
                             f"{self._base_z - 0.1000:.4f}")
             spot.set("rgba", "0.85 0.45 0.10 1.0")   # orange: graphite blended with the pedestal
             spot.set("group", "1")   # visual group, otherwise not rendered
@@ -443,12 +504,25 @@ class ButtonBoardEnv(ManipulationEnv):
             cam_g.set("name", "spot_frontcam_collision")
             cam_g.set("type", "box")
             cam_g.set("size", "0.0320 0.1400 0.0190")
-            cam_g.set("pos", f"{self.base_x_offset + 0.2410:.4f} 0 "
+            cam_g.set("pos", f"{self._base_x + 0.2410:.4f} 0 "
                              f"{self._base_z - 0.0070:.4f}")
             cam_g.set("rgba", "0.10 0.55 0.85 1.0")  # blue, to tell the bar from the body
             cam_g.set("group", "1")
             cam_g.set("contype", "1")
             cam_g.set("conaffinity", "1")
+
+        if self.lab_cam_box is not None:
+            x0, x1, y0, y1, z0, z1 = self.lab_cam_box
+            lab_g = ET.SubElement(mujoco_arena.worldbody, "geom")
+            lab_g.set("name", "spot_labcam_collision")
+            lab_g.set("type", "box")
+            lab_g.set("size", f"{(x1 - x0) / 2:.4f} {(y1 - y0) / 2:.4f} {(z1 - z0) / 2:.4f}")
+            lab_g.set("pos", f"{self._base_x + (x0 + x1) / 2:.4f} {(y0 + y1) / 2:.4f} "
+                             f"{self._base_z + (z0 + z1) / 2:.4f}")
+            lab_g.set("rgba", "0.10 0.10 0.10 1.0")
+            lab_g.set("group", "1")
+            lab_g.set("contype", "1")
+            lab_g.set("conaffinity", "1")
 
         # Omniboard: big (back) face on the wall at WALL_X, block tapers toward
         # the robot. Body local +Z (depth axis) must map to world -X:
@@ -471,7 +545,7 @@ class ButtonBoardEnv(ManipulationEnv):
         # 5 buttons: centre on the front face, 4 on the 45-deg bevels
         self._button_objs = []
         for i in range(self.N_BUTTONS):
-            btn = ButtonObject(name=f"btn{i}")
+            btn = ButtonObject(name=f"btn{i}", xml=self.button_xml)
             bx, by, bz = self._btn_body_pos(i)
             btn.get_obj().set("pos", f"{bx:.4f} {by:.4f} {bz:.4f}")
             btn.get_obj().set("quat", self._face_quat(self.BUTTON_FACES[i][1]))
@@ -553,6 +627,8 @@ class ButtonBoardEnv(ManipulationEnv):
                              if isinstance(d, tuple) else int(d))
             # The queue starts with ZERO commands ("stand still"), as on hardware.
             self._delay_buf = [np.zeros(self.action_dim) for _ in range(self._delay_d)]
+        # Filter starts from "stand still", as the bridge does
+        self._ema_state = None if self.action_ema is None else np.zeros(6)
 
         self._current_idx = 0
         self._pressed = [False] * self.N_BUTTONS
@@ -830,7 +906,7 @@ class ButtonBoardEnv(ManipulationEnv):
     def step(self, action):
         action = np.asarray(action, dtype=np.float64).copy()
         if self.force_gripper_closed:
-            action[-1] = 1.0  # Robotiq85: 1 = close
+            action[-1] = 1.0  # Robotiq85/140: 1 = close
         # Action penalties use the POLICY's output, before gain randomisation (docs 6.30).
         if self.action_rate_limit is not None:
             if self._prev_cmd is not None:
@@ -840,7 +916,12 @@ class ButtonBoardEnv(ManipulationEnv):
             self._prev_cmd = action.copy()
         # ... but after the rate limit, which is the command that reaches the controller.
         self._raw_action = action.copy()
-        # Delay applied AFTER `_raw_action`, so penalties refer to what the policy issued.
+        # Filter and delay applied AFTER `_raw_action`, so penalties refer to what the policy
+        # issued. Order as on hardware: bridge filter, then transport delay.
+        if self._ema_state is not None:
+            self._ema_state = (self.action_ema * action[0:6]
+                               + (1.0 - self.action_ema) * self._ema_state)
+            action[0:6] = self._ema_state
         if self._delay_buf is not None and self._delay_d > 0:
             self._delay_buf.append(action.copy())
             action = self._delay_buf.pop(0)
@@ -992,6 +1073,36 @@ class ButtonBoardEnv(ManipulationEnv):
     # Termination
     # ------------------------------------------------------------------
 
+    # proprio-state layout: joint_pos, cos, sin (18) | joint_vel 18:24 | eef pos+quats (11)
+    # | gripper_qpos 35:41 | gripper_qvel 41:47
+    _PROPRIO_VEL = (("robot0_joint_vel", 18, 24), ("robot0_gripper_qvel", 41, 47))
+
+    _PROPRIO_EEF = 24  # eef_pos slice start in proprio-state
+
+    def _get_observations(self, force_update=False):
+        obs = super()._get_observations(force_update)
+        if self.obs_base_relative and "robot0_eef_pos" in obs:
+            shift = np.array([self._base_x - self.base_x_offset, 0.0,
+                              self._base_z - self.KINOVA_BASE_Z])
+            e = np.asarray(obs["robot0_eef_pos"], dtype=np.float64)
+            if "robot0_proprio-state" in obs:
+                prop = np.array(obs["robot0_proprio-state"], dtype=np.float64)
+                a = self._PROPRIO_EEF
+                assert prop.shape == (47,) and np.allclose(prop[a:a + 3], e), "proprio layout changed"
+                prop[a:a + 3] = e - shift
+                obs["robot0_proprio-state"] = prop
+            obs["robot0_eef_pos"] = e - shift
+        k = self.obs_vel_scale
+        if k != 1.0 and "robot0_proprio-state" in obs:
+            prop = np.array(obs["robot0_proprio-state"], dtype=np.float64)
+            for name, a, b in self._PROPRIO_VEL:
+                v = np.asarray(obs[name], dtype=np.float64)
+                assert prop.shape == (47,) and np.allclose(prop[a:b], v), "proprio layout changed"
+                obs[name] = v * k
+                prop[a:b] = v * k
+            obs["robot0_proprio-state"] = prop
+        return obs
+
     def _check_success(self):
         return all(self._pressed)
 
@@ -1006,9 +1117,9 @@ class ButtonBoardEnv(ManipulationEnv):
     def _check_spot_collision(self):
         """True if any robot geom touches the Spot body. Counted separately from
         board collisions to keep the metric comparable with runs 6.1-6.41."""
-        if not (self.spot_body or self.spot_front_cam):
+        if not (self.spot_body or self.spot_front_cam or self.lab_cam_box is not None):
             return False
-        wlasne = ("spot_body_collision", "spot_frontcam_collision")
+        wlasne = ("spot_body_collision", "spot_frontcam_collision", "spot_labcam_collision")
         for contact in self.sim.data.contact[: self.sim.data.ncon]:
             g1 = self.sim.model.geom_id2name(contact.geom1) or ""
             g2 = self.sim.model.geom_id2name(contact.geom2) or ""
